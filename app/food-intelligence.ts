@@ -18,6 +18,7 @@ export type EvidenceFinding = {
   source: string;
   confidence: "High" | "Moderate" | "Low";
   sourceUrl?: string;
+  sourceLastReviewed?: string;
 };
 
 export type ScanReport = {
@@ -54,6 +55,29 @@ export const CULTIVATED_SAMPLE_LABEL =
   "Ingredients: cell-cultivated chicken, water, sunflower oil, pea protein, salt, natural flavor. Contains: pea. This product contains cultivated chicken made from cultured animal cells.";
 
 export const DEMO_BARCODE = "041196101266";
+
+export const SOURCE_REFERENCES = {
+  bioengineered: {
+    label: "USDA Bioengineered Food Disclosure Standard",
+    url: "https://www.ams.usda.gov/rules-regulations/be",
+    lastReviewed: "2026-07-14",
+  },
+  cultivated: {
+    label: "FDA human food made with cultured animal cells",
+    url: "https://www.fda.gov/food/food-ingredients-packaging/human-food-made-cultured-animal-cells",
+    lastReviewed: "2026-07-14",
+  },
+  digital: {
+    label: "USDA bioengineered disclosure FAQ",
+    url: "https://www.ams.usda.gov/rules-regulations/be/faq/disclosure",
+    lastReviewed: "2026-07-14",
+  },
+  recalls: {
+    label: "openFDA Food Enforcement Reports",
+    url: "https://open.fda.gov/apis/food/enforcement/",
+    lastReviewed: "2026-07-14",
+  },
+} as const;
 
 export const ADDITIVE_DICTIONARY: AdditiveFinding[] = [
   {
@@ -381,12 +405,13 @@ export function analyzeText(input: string, source: ScanMode, options: AnalyzeOpt
         bioengineered === "found"
           ? "Disclosure wording found"
           : bioengineered === "not-found"
-            ? "No disclosure wording found in this scan"
+            ? "No disclosure wording found in supplied evidence"
             : "Not enough label text to decide",
-      evidence: findSnippet(input, bioTerms) || "No matching wording appears in the supplied text.",
+      evidence: findSnippet(input, bioTerms) || "No matching wording appears in the supplied evidence.",
       source: sourceLabel,
       confidence,
-      sourceUrl: "https://www.ams.usda.gov/rules-regulations/be",
+      sourceUrl: SOURCE_REFERENCES.bioengineered.url,
+      sourceLastReviewed: SOURCE_REFERENCES.bioengineered.lastReviewed,
     },
     {
       id: "cultivated",
@@ -396,12 +421,13 @@ export function analyzeText(input: string, source: ScanMode, options: AnalyzeOpt
         cultivated === "found"
           ? "Cultivated-meat wording found"
           : cultivated === "not-found"
-            ? "No cultivated-meat wording found in this scan"
+            ? "No cultivated-meat wording found in supplied evidence"
             : "Not enough label text to decide",
-      evidence: findSnippet(input, cultivatedTerms) || "No matching wording appears in the supplied text.",
+      evidence: findSnippet(input, cultivatedTerms) || "No matching wording appears in the supplied evidence.",
       source: sourceLabel,
       confidence,
-      sourceUrl: "https://www.fda.gov/food/food-ingredients-packaging/human-food-made-cultured-animal-cells",
+      sourceUrl: SOURCE_REFERENCES.cultivated.url,
+      sourceLastReviewed: SOURCE_REFERENCES.cultivated.lastReviewed,
     },
     {
       id: "digital",
@@ -411,26 +437,27 @@ export function analyzeText(input: string, source: ScanMode, options: AnalyzeOpt
         digitalDisclosure === "found"
           ? "A QR or digital disclosure route was captured"
           : digitalDisclosure === "not-found"
-            ? "No digital disclosure wording found in this scan"
+            ? "No digital disclosure wording found in supplied evidence"
             : "A clear QR destination was not captured",
       evidence: options.qrUrl || findSnippet(input, digitalTerms) || "No QR destination or matching digital-link wording was supplied.",
       source: sourceLabel,
       confidence: options.qrUrl ? "High" : confidence,
-      sourceUrl: "https://www.ams.usda.gov/rules-regulations/be/faq/disclosure",
+      sourceUrl: SOURCE_REFERENCES.digital.url,
+      sourceLastReviewed: SOURCE_REFERENCES.digital.lastReviewed,
     },
   ];
 
   const parts = [
     bioengineered === "found"
-      ? "A bioengineered-food disclosure is present."
+      ? "Bioengineered-food disclosure wording was found in the supplied evidence."
       : qrDestinationOnly
         ? "The QR destination was captured, but its linked disclosure text was not read."
       : "No bioengineered-food disclosure was found in the supplied text; that is not proof of absence.",
     cultivated === "found"
-      ? "Cultivated or cell-cultured animal ingredients are named."
+      ? "Cultivated or cell-cultured animal wording was found in the supplied evidence."
       : qrDestinationOnly
         ? "Cultivated-meat wording cannot be evaluated from the URL alone."
-      : "No cultivated-meat wording was found in this scan.",
+      : "No cultivated-meat wording was found in the supplied text; that is not proof of absence.",
     processingMarkers.length
       ? `${processingMarkers.length} formulation marker${processingMarkers.length === 1 ? " was" : "s were"} identified.`
       : "No supported ultra-processing markers were detected in the supplied text.",
@@ -462,7 +489,13 @@ export function analyzeText(input: string, source: ScanMode, options: AnalyzeOpt
 }
 
 export function normalizeSavedReport(report: ScanReport): ScanReport {
-  if (report.evidence && report.processingLabel && report.digitalDisclosure) return report;
+  if (
+    report.evidence?.every((item) => item.sourceLastReviewed) &&
+    report.processingLabel &&
+    report.digitalDisclosure
+  ) {
+    return report;
+  }
   const normalized = analyzeText(report.input || "", report.source || "ingredients", {
     productName: report.productName,
     barcode: report.barcode,

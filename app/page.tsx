@@ -41,6 +41,7 @@ import {
   DEMO_BARCODE,
   SAMPLE_LABEL,
   SECOND_SAMPLE_LABEL,
+  SOURCE_REFERENCES,
   analyzeText,
   normalizeSavedReport,
   type FindingState,
@@ -81,8 +82,24 @@ function StatusIcon({ state }: { state: FindingState }) {
 
 function statusLabel(state: FindingState) {
   if (state === "found") return "Found in supplied evidence";
-  if (state === "not-found") return "Not found in this scan";
+  if (state === "not-found") return "Not found in supplied evidence";
   return "Not enough evidence";
+}
+
+function confidenceLabel(confidence: ScanReport["confidence"]) {
+  if (confidence === "High") return "High evidence confidence";
+  if (confidence === "Moderate") return "Moderate evidence confidence";
+  return "Low evidence confidence";
+}
+
+function confidenceCopy(confidence: ScanReport["confidence"]) {
+  if (confidence === "High") {
+    return "Confidence reflects evidence coverage: enough supplied label text was available for this rule check.";
+  }
+  if (confidence === "Moderate") {
+    return "Confidence reflects evidence coverage: useful text was available, but the scan may be partial or OCR-derived.";
+  }
+  return "Confidence reflects evidence coverage: the supplied text is short, indirect, or incomplete.";
 }
 
 function sourceIcon(source: ScanMode) {
@@ -125,7 +142,7 @@ function ProcessingMeter({ report, compact = false }: { report: ScanReport; comp
       </div>
       {!compact && (
         <p>
-          Based only on supported ingredient markers. This describes formulation complexity; it is not a health or safety score.
+          Based only on supported ingredient markers. This describes formulation complexity; it is not dietary advice or a risk score.
         </p>
       )}
     </div>
@@ -624,7 +641,7 @@ export default function Home() {
             <button className="scan-button" type="button" disabled={!canScan || isScanning} onClick={runScan}>
               {isScanning ? <><LoaderCircle className="spin" size={19} /> Reading evidence...</> : <><ScanLine size={19} /> Analyze this food</>}
             </button>
-            <p><Info size={14} /> Educational label analysis, not medical advice or a safety certification.</p>
+            <p><Info size={14} /> Educational label analysis, not medical or dietary advice and not a recall clearance.</p>
           </div>
         </div>
       </section>
@@ -639,7 +656,7 @@ export default function Home() {
             </div>
             <div className="result-actions">
               <button type="button" onClick={openCompare}><ArrowRightLeft size={15} /> Compare</button>
-              <span className="confidence-stamp"><Check size={16} /> {report.confidence} confidence</span>
+              <span className="confidence-stamp"><Check size={16} /> {confidenceLabel(report.confidence)}</span>
             </div>
           </div>
 
@@ -650,12 +667,17 @@ export default function Home() {
               </div>
               <h3>What the evidence says</h3>
               <p>{report.summary}</p>
-              <div className="source-stamp">{sourceIcon(report.source)} <span><small>Read from</small>{report.sourceLabel}</span></div>
+              <div className="source-stamp">
+                {sourceIcon(report.source)}
+                <span><small>Read from</small>{report.sourceLabel}</span>
+                <span><small>Scan date</small>{new Date(report.createdAt).toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+              </div>
               <div className="verdict-actions">
                 <button type="button" onClick={() => openRecallWatch(report.productName)}><TriangleAlert size={15} /> Check recalls</button>
                 <button type="button" onClick={() => openDictionary()}><BookText size={15} /> Additive guide</button>
               </div>
-              <div className="score-note"><Info size={16} /> Label clarity measures supplied evidence. It is not a health grade.</div>
+              <div className="score-note"><Info size={16} /> Label clarity measures supplied evidence. It is not a nutrition grade.</div>
+              <div className="score-note"><Info size={16} /> {confidenceCopy(report.confidence)}</div>
             </aside>
 
             <div className="finding-column">
@@ -709,7 +731,8 @@ export default function Home() {
                         <blockquote>{item.evidence}</blockquote>
                         <div className="evidence-meta">
                           <span>{sourceIcon(report.source)} {item.source}</span>
-                          <span>{item.confidence} confidence</span>
+                          <span>{confidenceLabel(item.confidence)}</span>
+                          {item.sourceLastReviewed && <span>Last reviewed {item.sourceLastReviewed}</span>}
                         </div>
                         <div className="evidence-links">
                           {directUrl && <a href={directUrl} target="_blank" rel="noreferrer">Open QR destination <ExternalLink size={14} /></a>}
@@ -779,7 +802,7 @@ export default function Home() {
 
       <footer className="site-footer">
         <Logo />
-        <p>Independent, cautious food-label education. FoodMonocle does not determine whether a product is safe for you.</p>
+        <p>Independent, cautious food-label education. FoodMonocle explains disclosed evidence without judging personal suitability.</p>
         <div><button type="button" onClick={() => setLearnOpen(true)}>Method & sources</button><span>Beta 0.2</span></div>
       </footer>
 
@@ -840,7 +863,7 @@ export default function Home() {
         <div className="modal-scrim centered" role="presentation" onMouseDown={() => setRecallsOpen(false)}>
           <section className="feature-modal recall-modal" role="dialog" aria-modal="true" aria-label="Recall watch" onMouseDown={(event) => event.stopPropagation()}>
             <div className="drawer-head"><div><small>Official FDA enforcement data</small><h2>Recall watch</h2></div><button type="button" onClick={() => setRecallsOpen(false)} aria-label="Close recall watch"><X size={21} /></button></div>
-            <p className="modal-intro">Search the exact product, brand, or recalling company. A no-match result does not certify that a product is safe or recall-free.</p>
+            <p className="modal-intro">Search the exact product, brand, or recalling company. A no-match result does not clear a product of recalls or other issues.</p>
             <div className="recall-search-row">
               <label className="modal-search">
                 <Search size={18} />
@@ -877,7 +900,7 @@ export default function Home() {
               <a href="https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts" target="_blank" rel="noreferrer">FDA recalls <ExternalLink size={14} /></a>
               <a href="https://www.fsis.usda.gov/recalls-alerts" target="_blank" rel="noreferrer">USDA meat and poultry recalls <ExternalLink size={14} /></a>
             </div>
-            <p className="legal-note"><Database size={16} /> The openFDA food enforcement dataset is updated weekly and is not a real-time safety alert service. Verify any match with the official notice and the package in hand.</p>
+            <p className="legal-note"><Database size={16} /> The openFDA food enforcement dataset is updated weekly and is not a real-time recall alert service. Verify any match with the official notice and the package in hand.</p>
           </section>
         </div>
       )}
@@ -931,11 +954,11 @@ export default function Home() {
             </div>
             <div className="source-box">
               <strong>Regulatory and data starting points</strong>
-              <a href="https://www.ams.usda.gov/rules-regulations/be" target="_blank" rel="noreferrer">USDA Bioengineered Food Disclosure Standard <ChevronRight size={15} /></a>
-              <a href="https://www.fda.gov/food/food-ingredients-packaging/human-food-made-cultured-animal-cells" target="_blank" rel="noreferrer">FDA: Food made with cultured animal cells <ChevronRight size={15} /></a>
-              <a href="https://open.fda.gov/apis/food/enforcement/" target="_blank" rel="noreferrer">openFDA Food Enforcement Reports <ChevronRight size={15} /></a>
+              <a href={SOURCE_REFERENCES.bioengineered.url} target="_blank" rel="noreferrer">{SOURCE_REFERENCES.bioengineered.label} <span>Last reviewed {SOURCE_REFERENCES.bioengineered.lastReviewed}</span> <ChevronRight size={15} /></a>
+              <a href={SOURCE_REFERENCES.cultivated.url} target="_blank" rel="noreferrer">{SOURCE_REFERENCES.cultivated.label} <span>Last reviewed {SOURCE_REFERENCES.cultivated.lastReviewed}</span> <ChevronRight size={15} /></a>
+              <a href={SOURCE_REFERENCES.recalls.url} target="_blank" rel="noreferrer">{SOURCE_REFERENCES.recalls.label} <span>Last reviewed {SOURCE_REFERENCES.recalls.lastReviewed}</span> <ChevronRight size={15} /></a>
             </div>
-            <p className="legal-note"><AlertCircle size={16} /> Ingredient, allergen, and recall results must be checked against the physical package and official notices. FoodMonocle is educational, not medical, dietary, legal, or safety advice.</p>
+            <p className="legal-note"><AlertCircle size={16} /> Ingredient, allergen, and recall results must be checked against the physical package and official notices. FoodMonocle is educational; it is not medical, dietary, legal, or risk advice.</p>
           </section>
         </div>
       )}
