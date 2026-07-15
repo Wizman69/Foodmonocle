@@ -10,7 +10,7 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
     "build": "bash scripts/build-verified.sh",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs tests/phase1-trust-copy.test.mjs tests/open-food-facts.test.mjs tests/phase3-cloud-library.test.mjs tests/phase4-recalls.test.mjs",
+    "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs tests/phase1-trust-copy.test.mjs tests/open-food-facts.test.mjs tests/phase3-cloud-library.test.mjs tests/phase4-recalls.test.mjs tests/phase5-disclosures.test.mjs",
     "validate:artifact": "bash scripts/validate-artifact.sh",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern public/tesseract",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
@@ -19,6 +19,7 @@
     "@tesseract.js-data/eng": "^1.0.0",
     "@zxing/browser": "^0.1.5",
     "drizzle-orm": "0.45.2",
+    "htmlparser2": "12.0.0",
     "lucide-react": "^0.468.0",
     "next": "16.2.6",
     "react": "19.2.6",

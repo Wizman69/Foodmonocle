@@ -633,6 +633,182 @@ a:focus-visible {
   flex: 0 0 auto;
 }
 
+.qr-destination-preview,
+.disclosure-failure {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  background: #f4faf6;
+  border-left: 4px solid var(--forest);
+  border-radius: 5px;
+}
+
+.qr-destination-preview > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--forest);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.qr-destination-preview strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.qr-destination-preview code {
+  max-height: 58px;
+  overflow: auto;
+  color: #425750;
+  font-size: 9px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.qr-destination-preview p,
+.disclosure-failure p,
+.disclosure-failure span {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.disclosure-failure {
+  background: var(--coral-soft);
+  border-left-color: var(--coral);
+}
+
+.disclosure-failure strong {
+  color: #913840;
+  font-size: 11px;
+}
+
+.disclosure-result-card {
+  display: grid;
+  gap: 15px;
+}
+
+.disclosure-result-head {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 13px;
+  border-bottom: 1px solid var(--line);
+}
+
+.disclosure-result-head > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--forest);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.disclosure-result-head strong {
+  font-size: 15px;
+}
+
+.disclosure-result-head p,
+.disclosure-redirects,
+.manufacturer-evidence p,
+.foodmonocle-explanation p {
+  margin: 0;
+  color: #52645e;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.disclosure-source-grid,
+.disclosure-observations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.disclosure-source-grid > span,
+.disclosure-observations > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  background: #f7faf7;
+  border: 1px solid #e1e8e3;
+  border-radius: 4px;
+  color: var(--ink);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.disclosure-source-grid small,
+.disclosure-observations small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.disclosure-source-grid a {
+  display: inline;
+  color: var(--forest);
+  font-weight: 700;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.disclosure-source-grid a svg {
+  vertical-align: -2px;
+}
+
+.disclosure-observations strong {
+  font-size: 10px;
+}
+
+.manufacturer-evidence,
+.foodmonocle-explanation {
+  display: grid;
+  gap: 8px;
+}
+
+.manufacturer-evidence > strong,
+.foodmonocle-explanation > strong {
+  font-size: 10px;
+}
+
+.manufacturer-evidence blockquote {
+  margin: 0;
+  display: grid;
+  gap: 7px;
+  padding: 11px;
+  color: var(--ink);
+  background: var(--yellow-soft);
+  border-left: 3px solid var(--yellow);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.manufacturer-evidence blockquote span {
+  color: var(--muted);
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.foodmonocle-explanation p {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.foodmonocle-explanation svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
 .barcode-record {
   display: grid;
   gap: 11px;
@@ -2827,7 +3003,9 @@ a:focus-visible {
   }
 
   .barcode-record-grid,
-  .nutrition-grid {
+  .nutrition-grid,
+  .disclosure-source-grid,
+  .disclosure-observations {
     grid-template-columns: 1fr;
   }
 

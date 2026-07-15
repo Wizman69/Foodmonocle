@@ -60,6 +60,7 @@ import {
 } from "./cloud-library";
 import type { OpenFoodFactsLookupResult, OpenFoodFactsNutrition } from "./open-food-facts";
 import type { RecallResult, RecallSourceStatus } from "./recall-engine";
+import type { DisclosureAnalysisResult, DisclosureAnalysisSuccess } from "./disclosure-types";
 
 type BarcodeProductLookup = Extract<OpenFoodFactsLookupResult, { status: "found" | "incomplete" }>;
 
@@ -121,10 +122,67 @@ function safeHttpUrl(value?: string) {
   if (!value) return "";
   try {
     const parsed = new URL(value);
-    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : "";
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) return "";
+    return parsed.toString();
   } catch {
     return "";
   }
+}
+
+function disclosurePreview(value: string) {
+  const url = safeHttpUrl(value.trim());
+  if (!url) return null;
+  const parsed = new URL(url);
+  parsed.hash = "";
+  return { url: parsed.toString(), domain: parsed.hostname };
+}
+
+function isDisclosureSuccess(value: unknown): value is DisclosureAnalysisSuccess {
+  return Boolean(value && typeof value === "object" && (value as DisclosureAnalysisSuccess).status === "analyzed");
+}
+
+function DisclosureResultCard({ result }: { result: DisclosureAnalysisSuccess }) {
+  const observationRows = [
+    ["Direct product information", result.observations.directProductInformation],
+    ["BE evidence in first content", result.observations.beDisclosureInFirstContent],
+    ["Promotional content dominated", result.observations.marketingDominated],
+    ["Package scan wording", result.observations.packageScanInstruction],
+    ["Package phone wording", result.observations.packagePhoneDisclosure],
+    ["Image-based disclosure", result.observations.imageBasedDisclosure],
+  ];
+
+  return (
+    <div className="disclosure-result-card">
+      <div className="disclosure-result-head">
+        <span><QrCode size={15} /> Manufacturer-provided page</span>
+        <strong>{result.classification}</strong>
+        <p>{result.explanation}</p>
+      </div>
+      <div className="disclosure-source-grid">
+        <span><small>Original destination</small><a href={result.originalUrl} target="_blank" rel="noreferrer">{result.originalUrl} <ExternalLink size={12} /></a></span>
+        <span><small>Final destination</small><a href={result.finalUrl} target="_blank" rel="noreferrer">{result.finalUrl} <ExternalLink size={12} /></a></span>
+        <span><small>Source domain</small>{result.finalDomain}</span>
+        <span><small>Retrieved</small>{formatDateTime(result.retrievedAt)}</span>
+      </div>
+      {result.redirects.length > 0 && <p className="disclosure-redirects">Redirects followed: {result.redirects.join(" -> ")}</p>}
+      <div className="disclosure-observations">
+        {observationRows.map(([label, value]) => <span key={label}><small>{label}</small><strong>{value}</strong></span>)}
+      </div>
+      <div className="manufacturer-evidence">
+        <strong>Manufacturer-provided evidence</strong>
+        {result.evidence.length ? result.evidence.map((item, index) => (
+          <blockquote key={`${item.location}-${index}`}>
+            {item.text}
+            <span>{item.location} · {item.confidence} evidence confidence</span>
+          </blockquote>
+        )) : <p>No supported BE disclosure snippet was detected in the retrieved content.</p>}
+      </div>
+      <div className="foodmonocle-explanation">
+        <strong>FoodMonocle explanation and limits</strong>
+        {result.limitations.map((limitation) => <p key={limitation}><Info size={13} /> {limitation}</p>)}
+      </div>
+    </div>
+  );
 }
 
 function formatRecallDate(value: string) {
@@ -267,6 +325,9 @@ export default function Home() {
   const [barcode, setBarcode] = useState("");
   const [barcodeLookup, setBarcodeLookup] = useState<OpenFoodFactsLookupResult | null>(null);
   const [qrValue, setQrValue] = useState("");
+  const [qrPackageText, setQrPackageText] = useState("");
+  const [qrPreview, setQrPreview] = useState<{ url: string; domain: string } | null>(null);
+  const [disclosureResult, setDisclosureResult] = useState<DisclosureAnalysisResult | null>(null);
   const [imageName, setImageName] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [imageBytes, setImageBytes] = useState<ArrayBuffer | null>(null);
@@ -418,6 +479,10 @@ export default function Home() {
   const rightReport = compareReports.find((item) => item.id === compareRightId) || null;
   const favoriteSet = useMemo(() => new Set(favoriteIds), [favoriteIds]);
   const canOfferSync = account.status === "signed-in" && history.length > 0 && !hasLocalSyncConsent;
+  const storedDisclosure = report?.productInfo?.disclosure;
+  const displayedDisclosure = disclosureResult?.status === "analyzed"
+    ? disclosureResult
+    : isDisclosureSuccess(storedDisclosure) ? storedDisclosure : null;
 
   const onImage = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -431,6 +496,10 @@ export default function Home() {
       setImageName(file.name);
       setImageBytes(nextImageBytes);
       setImageUrl(nextImageUrl);
+      if (mode === "qr") {
+        setQrPreview(null);
+        setDisclosureResult(null);
+      }
     } catch {
       setImageBytes(null);
       setError("This image could not be read. Try choosing it again or use the text scanner.");
@@ -567,8 +636,6 @@ export default function Home() {
     try {
       let scanText = ingredients.trim();
       let sourceLabel = "Supplied package text";
-      let decodedQr = "";
-      let qrUrl = "";
       let reportProductName = productName.trim() || undefined;
       let reportProductInfo: ScanReport["productInfo"] | undefined;
 
@@ -618,25 +685,7 @@ export default function Home() {
         sourceLabel = imageName ? `Reviewed text from ${imageName}` : "Supplied package text";
       }
 
-      if (mode === "qr") {
-        decodedQr = qrValue.trim();
-        if (imageUrl) {
-          try {
-            decodedQr = await decodeQrImage(imageUrl);
-            setQrValue(decodedQr);
-          } catch {
-            if (!decodedQr) {
-              throw new Error("No readable QR code was found. Retake the photo straight-on, or paste the destination shown by your phone camera.");
-            }
-          }
-        }
-        if (!decodedQr) throw new Error("Add a QR photo or paste its destination or disclosure text.");
-        qrUrl = safeHttpUrl(decodedQr);
-        scanText = decodedQr;
-        sourceLabel = imageName ? `QR decoded from ${imageName}` : "Supplied digital disclosure";
-      }
-
-      if (scanText.length < 20 && mode !== "qr") {
+      if (scanText.length < 20) {
         throw new Error("Add enough ingredient and disclosure text for a reliable scan.");
       }
 
@@ -645,7 +694,6 @@ export default function Home() {
       const nextReport = analyzeText(scanText, mode, {
         productName: reportProductName,
         barcode: mode === "barcode" ? barcode : undefined,
-        qrUrl: qrUrl || undefined,
         sourceLabel,
         limitedEvidence: mode === "barcode",
         productInfo: reportProductInfo || {
@@ -664,12 +712,108 @@ export default function Home() {
     }
   };
 
+  const prepareQrDisclosure = async () => {
+    setError("");
+    setDisclosureResult(null);
+    setIsScanning(true);
+    setScanProgress(4);
+    setScanStage("Reading QR destination");
+    try {
+      let decoded = qrValue.trim();
+      if (imageUrl) {
+        try {
+          decoded = await decodeQrImage(imageUrl);
+          setQrValue(decoded);
+        } catch {
+          if (!decoded) throw new Error("No readable QR code was found. Retake the photo straight-on, or paste the destination shown by your phone camera.");
+        }
+      }
+      if (!decoded) throw new Error("Add a QR photo or paste its destination or disclosure text.");
+
+      const preview = disclosurePreview(decoded);
+      if (preview) {
+        setQrPreview(preview);
+        setScanStage("Destination ready for review");
+        setScanProgress(100);
+        return;
+      }
+
+      if (/^(?:javascript|data|file|ftp|ws|wss|mailto|blob):/i.test(decoded) || decoded.includes("://")) {
+        throw new Error("Only HTTP and HTTPS disclosure destinations without embedded credentials are supported.");
+      }
+      if (decoded.length < 20) throw new Error("Paste a valid HTTP or HTTPS destination, or enough disclosure text to analyze.");
+
+      const suppliedText = [decoded, qrPackageText.trim()].filter(Boolean).join("\n");
+      setScanStage("Building evidence report from supplied text");
+      setScanProgress(94);
+      finishReport(analyzeText(suppliedText, "qr", {
+        productName: productName.trim() || undefined,
+        sourceLabel: imageName ? `Disclosure text supplied with ${imageName}` : "User-supplied disclosure text",
+        limitedEvidence: true,
+        productInfo: { name: productName.trim() || "Digital disclosure", source: "User-supplied disclosure text" },
+      }));
+    } catch (caught) {
+      setQrPreview(null);
+      setError(caught instanceof Error ? caught.message : "The QR destination could not be prepared.");
+    } finally {
+      setIsScanning(false);
+      window.setTimeout(() => setScanStage(""), 500);
+    }
+  };
+
+  const analyzeQrDisclosure = async () => {
+    if (!qrPreview) return;
+    setError("");
+    setDisclosureResult(null);
+    setIsScanning(true);
+    setScanProgress(8);
+    setScanStage("Retrieving disclosure through FoodMonocle");
+    try {
+      const response = await fetch("/api/disclosure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: qrPreview.url, packageText: qrPackageText.trim() }),
+      });
+      const result = (await response.json()) as DisclosureAnalysisResult | { error?: string };
+      if (!("status" in result)) throw new Error(result.error || "The disclosure service returned an unexpected response.");
+      setDisclosureResult(result);
+      if (result.status !== "analyzed") throw new Error(result.message);
+
+      setScanStage("Building disclosure evidence report");
+      setScanProgress(94);
+      const suppliedEvidence = [result.analysisText, qrPackageText.trim()].filter(Boolean).join("\n") || `Retrieved product information from ${result.finalDomain}.`;
+      const nextProductName = productName.trim() || result.pageTitle || result.finalDomain;
+      if (!productName.trim()) setProductName(nextProductName);
+      finishReport(analyzeText(suppliedEvidence, "qr", {
+        productName: nextProductName,
+        qrUrl: result.finalUrl,
+        sourceLabel: `Manufacturer-provided page at ${result.finalDomain}, retrieved ${formatDateTime(result.retrievedAt)}`,
+        limitedEvidence: true,
+        productInfo: {
+          name: nextProductName,
+          source: "Manufacturer-provided disclosure page",
+          sourceUrl: result.finalUrl,
+          sourceRetrievedAt: result.retrievedAt,
+          disclosure: result,
+        },
+      }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The disclosure page could not be analyzed.");
+    } finally {
+      setIsScanning(false);
+      window.setTimeout(() => setScanStage(""), 500);
+    }
+  };
+
   const loadSample = (kind: "standard" | "cultivated" = "standard") => {
     setMode("ingredients");
     setIngredients(kind === "cultivated" ? CULTIVATED_SAMPLE_LABEL : SAMPLE_LABEL);
     setProductName(kind === "cultivated" ? "Cultivated chicken bites" : "Colorful corn snack");
     setBarcode("");
     setQrValue("");
+    setQrPackageText("");
+    setQrPreview(null);
+    setDisclosureResult(null);
     setError("");
     setReport(null);
   };
@@ -699,6 +843,7 @@ export default function Home() {
   const startOver = () => {
     setReport(null);
     setError("");
+    setDisclosureResult(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -1007,10 +1152,31 @@ export default function Home() {
                   </label>
                 </>
               ) : (
-                <label className="text-field">
-                  <span>QR destination or disclosure text <small>optional when a photo is added</small></span>
-                  <textarea value={qrValue} onChange={(event) => setQrValue(event.target.value)} placeholder="Paste the decoded URL or the disclosure text it opens..." rows={3} />
-                </label>
+                <>
+                  <label className="text-field">
+                    <span>QR destination or disclosure text <small>optional when a photo is added</small></span>
+                    <textarea value={qrValue} onChange={(event) => { setQrValue(event.target.value); setQrPreview(null); setDisclosureResult(null); }} placeholder="Paste the decoded HTTP or HTTPS URL, or disclosure text..." rows={3} />
+                  </label>
+                  <label className="text-field compact-field">
+                    <span>Wording printed near the QR code <small>optional package evidence</small></span>
+                    <textarea value={qrPackageText} onChange={(event) => setQrPackageText(event.target.value)} placeholder='Example: "Scan here for more food information" and any accompanying phone wording' rows={2} />
+                  </label>
+                  {qrPreview && (
+                    <div className="qr-destination-preview" aria-live="polite">
+                      <span><ShieldCheck size={16} /> Destination ready for review</span>
+                      <strong>{qrPreview.domain}</strong>
+                      <code>{qrPreview.url}</code>
+                      <p>Choosing Analyze disclosure contacts this website through FoodMonocle&apos;s server. The page is read without scripts, cookies, account identity, or referrer information.</p>
+                    </div>
+                  )}
+                  {disclosureResult && disclosureResult.status !== "analyzed" && (
+                    <div className={`disclosure-failure ${disclosureResult.status}`} role="status">
+                      <strong>{disclosureResult.classification}</strong>
+                      <p>{disclosureResult.message}</p>
+                      <span>{disclosureResult.originalDomain || "Destination unavailable"} · Checked {formatDateTime(disclosureResult.retrievedAt)}</span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -1064,10 +1230,10 @@ export default function Home() {
           )}
 
           <div className="scan-actions">
-            <button className="scan-button" type="button" disabled={!canScan || isScanning} onClick={runScan}>
-              {isScanning ? <><LoaderCircle className="spin" size={19} /> Reading evidence...</> : <><ScanLine size={19} /> Analyze this food</>}
+            <button className="scan-button" type="button" disabled={!canScan || isScanning} onClick={mode === "qr" ? (qrPreview ? analyzeQrDisclosure : prepareQrDisclosure) : runScan}>
+              {isScanning ? <><LoaderCircle className="spin" size={19} /> Reading evidence...</> : mode === "qr" ? qrPreview ? <><ShieldCheck size={19} /> Analyze disclosure</> : <><QrCode size={19} /> Review QR destination</> : <><ScanLine size={19} /> Analyze this food</>}
             </button>
-            <p><Info size={14} /> Educational label analysis, not medical or dietary advice and not a recall clearance.</p>
+            <p><Info size={14} /> Educational label analysis, not medical, dietary, safety, or legal advice and not a recall clearance.</p>
           </div>
         </div>
       </section>
@@ -1153,6 +1319,16 @@ export default function Home() {
                 </article>
               )}
 
+              {report.source === "qr" && displayedDisclosure && (
+                <article className="detail-card disclosure-source-card">
+                  <div className="detail-heading">
+                    <div><span className="section-number">QR</span><h3>Digital disclosure evidence</h3></div>
+                    <span>First retrieved content</span>
+                  </div>
+                  <DisclosureResultCard result={displayedDisclosure} />
+                </article>
+              )}
+
               <article className="detail-card evidence-section">
                 <div className="detail-heading">
                   <div><span className="section-number">01</span><h3>Evidence cards</h3></div>
@@ -1224,7 +1400,7 @@ export default function Home() {
                 <ul>
                   <li><CheckCircle2 size={17} /> Check OCR text against the physical package, especially allergen wording.</li>
                   <li><CheckCircle2 size={17} /> Scan the full back panel; disclosures may sit away from ingredients.</li>
-                  <li><CheckCircle2 size={17} /> Open any QR destination and scan the disclosure text it contains.</li>
+                  <li><CheckCircle2 size={17} /> Compare any digital disclosure evidence with the wording printed on the physical package.</li>
                 </ul>
               </article>
             </div>
@@ -1466,8 +1642,8 @@ export default function Home() {
             <div className="drawer-head"><div><small>Evidence over alarm</small><h2>How FoodMonocle reads a label</h2></div><button type="button" onClick={() => setLearnOpen(false)} aria-label="Close method"><X size={21} /></button></div>
             <p className="method-intro">The app reports what is visible, separates findings from guesses, and never treats one ingredient as a verdict on the whole food.</p>
             <div className="method-steps">
-              <article><span>1</span><div><strong>Read locally</strong><p>Photo OCR and QR decoding run in your browser. FoodMonocle does not upload the image to an account.</p></div></article>
-              <article><span>2</span><div><strong>Find exact disclosures</strong><p>Look for on-package wording tied to bioengineered foods, cultivated animal cells, and digital disclosures.</p></div></article>
+              <article><span>1</span><div><strong>Read locally first</strong><p>Photo OCR and QR decoding run in your browser. FoodMonocle does not upload the package image or store disclosure-page images.</p></div></article>
+              <article><span>2</span><div><strong>Review digital destinations</strong><p>A QR destination is shown before retrieval. Only after you choose Analyze disclosure does FoodMonocle&apos;s server contact the destination and read supported content without running page scripts.</p></div></article>
               <article><span>3</span><div><strong>Explain formulation clues</strong><p>Translate additive purposes and count supported ultra-processing markers without assigning a fear score.</p></div></article>
               <article><span>4</span><div><strong>Show evidence and limits</strong><p>Quote the matched text, identify the source, show confidence, and state what a scan cannot prove.</p></div></article>
             </div>
