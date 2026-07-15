@@ -42,7 +42,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -58,9 +59,11 @@ button {
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
+select:focus-visible,
 a:focus-visible {
-  outline: 3px solid rgba(33, 78, 67, 0.25);
+  outline: 3px solid #e0bd24;
   outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--forest-deep);
 }
 
 .app-shell {
@@ -430,8 +433,18 @@ a:focus-visible {
   position: absolute;
   width: 1px;
   height: 1px;
+  margin: -1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
   opacity: 0;
-  pointer-events: none;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.upload-zone:focus-within {
+  outline: 3px solid #e0bd24;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--forest-deep);
 }
 
 .upload-zone .upload-icon {
@@ -631,6 +644,125 @@ a:focus-visible {
 
 .source-caveat svg {
   flex: 0 0 auto;
+}
+
+.camera-start-button {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 13px;
+  color: var(--forest-deep);
+  background: var(--mint);
+  border: 1px solid var(--mint-strong);
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.camera-start-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.camera-preview {
+  min-height: 240px;
+  position: relative;
+  margin-top: 14px;
+  overflow: hidden;
+  background: #10221e;
+  border: 2px solid var(--forest-deep);
+  border-radius: 6px;
+}
+
+.camera-preview video {
+  width: 100%;
+  height: 280px;
+  display: block;
+  object-fit: cover;
+}
+
+.camera-guide {
+  width: min(76%, 340px);
+  height: 42%;
+  position: absolute;
+  left: 50%;
+  top: 44%;
+  translate: -50% -50%;
+  border: 3px solid var(--yellow);
+  border-radius: 6px;
+  box-shadow: 0 0 0 999px rgba(7, 20, 16, 0.32);
+}
+
+.camera-preview-bar {
+  min-height: 50px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px 8px 13px;
+  color: white;
+  background: rgba(9, 27, 22, 0.92);
+}
+
+.camera-preview-bar span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.camera-preview-bar button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: white;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.camera-feedback {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  color: var(--forest-deep);
+  background: var(--mint);
+  border-left: 3px solid var(--forest);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.camera-feedback.error {
+  color: #78323a;
+  background: var(--coral-soft);
+  border-left-color: var(--coral);
+}
+
+.camera-feedback button,
+.form-error button {
+  min-height: 32px;
+  padding: 0 9px;
+  color: inherit;
+  background: white;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
 }
 
 .qr-destination-preview,
@@ -957,6 +1089,11 @@ a:focus-visible {
 
 .form-error svg {
   flex: 0 0 auto;
+}
+
+.form-error span {
+  min-width: 0;
+  flex: 1;
 }
 
 .scan-progress {
@@ -2380,6 +2517,54 @@ a:focus-visible {
   cursor: wait;
 }
 
+.privacy-summary {
+  margin-top: 18px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.privacy-summary h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.privacy-summary > p {
+  margin: 6px 0 12px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.privacy-summary dl {
+  margin: 0;
+  display: grid;
+  gap: 9px;
+}
+
+.privacy-summary dl div {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+
+.privacy-summary dt {
+  color: var(--forest-deep);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.privacy-summary dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .recall-filter-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -3002,6 +3187,19 @@ a:focus-visible {
     min-height: 180px;
   }
 
+  .camera-preview video {
+    height: 240px;
+  }
+
+  .camera-feedback {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .camera-feedback button {
+    grid-column: 2;
+    justify-self: start;
+  }
+
   .barcode-record-grid,
   .nutrition-grid,
   .disclosure-source-grid,
@@ -3161,6 +3359,11 @@ a:focus-visible {
     padding: 20px;
   }
 
+  .privacy-summary dl div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
   .modal-scrim.centered {
     padding: 10px;
   }
@@ -3232,6 +3435,46 @@ a:focus-visible {
 
   .comparison-table > div {
     min-width: 650px;
+  }
+}
+
+@media (max-width: 390px) {
+  .topbar,
+  .workspace,
+  .roadmap-strip,
+  .site-footer {
+    width: calc(100% - 20px);
+  }
+
+  .scanner-panel {
+    margin: 0;
+    padding: 14px;
+  }
+
+  .scanner-head {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .scanner-head h2 {
+    font-size: 19px;
+  }
+
+  .privacy-pill {
+    max-width: 112px;
+    line-height: 1.3;
+  }
+
+  .camera-preview-bar {
+    align-items: flex-end;
+  }
+
+  .form-error {
+    flex-wrap: wrap;
+  }
+
+  .form-error button {
+    margin-left: 25px;
   }
 }
 

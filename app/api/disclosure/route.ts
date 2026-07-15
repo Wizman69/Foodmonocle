@@ -1,4 +1,5 @@
 import { analyzeDisclosureUrl, disclosureFailure, DisclosureReaderError } from "../../disclosure-reader.ts";
+import { ApiRequestError, assertSameOrigin } from "../../api-security.ts";
 
 const MAX_REQUEST_BYTES = 16 * 1024;
 
@@ -37,6 +38,16 @@ function json(body: unknown, status = 200) {
 }
 
 export async function POST(request: Request) {
+  try {
+    assertSameOrigin(request);
+  } catch (error) {
+    if (error instanceof ApiRequestError) return json({ error: error.message }, error.status);
+    return json({ error: "The disclosure request could not be accepted." }, 400);
+  }
+  const contentType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json" && !contentType?.endsWith("+json")) {
+    return json({ error: "Send the disclosure request as application/json." }, 415);
+  }
   const contentLength = Number(request.headers.get("content-length") || "0");
   if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
     return json({ error: "The disclosure request is too large." }, 413);

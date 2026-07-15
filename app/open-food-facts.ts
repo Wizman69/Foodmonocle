@@ -229,6 +229,8 @@ export async function lookupOpenFoodFactsBarcode(
   const source = sourceFor(barcode, retrievedAt);
   const endpoint = new URL(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}`);
   endpoint.searchParams.set("fields", OPEN_FOOD_FACTS_FIELDS);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
 
   try {
     const response = await fetchImpl(endpoint.toString(), {
@@ -236,6 +238,7 @@ export async function lookupOpenFoodFactsBarcode(
         Accept: "application/json",
         "User-Agent": "FoodMonocle/0.2 (https://github.com/Wizman69/Foodmonocle)",
       },
+      signal: controller.signal,
     });
     if (!response.ok) {
       throw new Error(`Open Food Facts returned ${response.status}`);
@@ -251,5 +254,7 @@ export async function lookupOpenFoodFactsBarcode(
       fallbackPrompt: "Use photo OCR or manual label entry while the barcode source is unavailable.",
       fallbackSourceLabel: "Manual label text after Open Food Facts lookup error",
     };
+  } finally {
+    clearTimeout(timeout);
   }
 }

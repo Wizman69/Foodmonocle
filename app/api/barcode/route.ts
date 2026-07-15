@@ -1,11 +1,12 @@
 import { lookupOpenFoodFactsBarcode } from "../../open-food-facts";
+import { normalizeGtin } from "../../barcode.ts";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const barcode = searchParams.get("barcode") || "";
+  const barcode = normalizeGtin(searchParams.get("barcode") || "");
 
-  if (barcode.replace(/\D/g, "").length < 8) {
-    return Response.json({ error: "Enter at least 8 barcode digits." }, { status: 400 });
+  if (!barcode) {
+    return Response.json({ error: "Enter a valid UPC, EAN, or GTIN with its check digit." }, { status: 400 });
   }
 
   const result = await lookupOpenFoodFactsBarcode(barcode);

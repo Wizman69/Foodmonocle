@@ -38,7 +38,7 @@ import {
   X,
 } from "lucide-react";
 import Image from "next/image";
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ADDITIVE_DICTIONARY,
   CULTIVATED_SAMPLE_LABEL,
@@ -61,6 +61,15 @@ import {
 import type { OpenFoodFactsLookupResult, OpenFoodFactsNutrition } from "./open-food-facts";
 import type { RecallResult, RecallSourceStatus } from "./recall-engine";
 import type { DisclosureAnalysisResult, DisclosureAnalysisSuccess } from "./disclosure-types";
+import {
+  cameraErrorMessage,
+  isCameraInputSupported,
+  normalizeGtin,
+  startCameraScanner,
+  type CameraScanKind,
+  type CameraScanSession,
+} from "./camera-scanner";
+import { fetchWithTimeout } from "./request-resilience";
 
 type BarcodeProductLookup = Extract<OpenFoodFactsLookupResult, { status: "found" | "incomplete" }>;
 
@@ -363,6 +372,17 @@ export default function Home() {
   const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
   const [savedComparisons, setSavedComparisons] = useState<CloudComparison[]>([]);
   const [hasLocalSyncConsent, setHasLocalSyncConsent] = useState(false);
+  const [cameraMode, setCameraMode] = useState<CameraScanKind | null>(null);
+  const [cameraState, setCameraState] = useState<"idle" | "starting" | "active" | "captured" | "error">("idle");
+  const [cameraMessage, setCameraMessage] = useState("");
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraSessionRef = useRef<CameraScanSession | null>(null);
+  const cameraRequestRef = useRef(0);
+  const scanInFlightRef = useRef(false);
+  const recallInFlightRef = useRef(false);
+  const scanRequestRef = useRef<AbortController | null>(null);
+  const recallRequestRef = useRef<AbortController | null>(null);
+  const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const restoreHistory = window.setTimeout(() => {
@@ -400,6 +420,274 @@ export default function Home() {
   }, [savedComparisons]);
 
   useEffect(() => {
+    return () => {
+      if (imageUrl) URL.revokeObjectURL(imageUrl);
+    };
+  }, [imageUrl]);
+
+  useEffect(() => () => {
+    cameraRequestRef.current += 1;
+    cameraSessionRef.current?.stop();
+    cameraSessionRef.current = null;
+    scanRequestRef.current?.abort();
+    recallRequestRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setHistoryOpen(false);
+      setLearnOpen(false);
+      setDictionaryOpen(false);
+      setRecallsOpen(false);
+      setCompareOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, []);
+
+  useEffect(() => {
+    const dialogOpen = historyOpen || learnOpen || dictionaryOpen || recallsOpen || compareOpen;
+    if (!dialogOpen) return;
+    dialogReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const timer = window.setTimeout(() => {
+      const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+      if (!dialog) return;
+      dialog.setAttribute("tabindex", "-1");
+      const first = dialog.querySelector<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+      (first || dialog).focus();
+    }, 0);
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+      if (!dialog) return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1) || first;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", trapFocus);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("keydown", trapFocus);
+      dialogReturnFocusRef.current?.focus();
+      dialogReturnFocusRef.current = null;
+    };
+  }, [compareOpen, dictionaryOpen, historyOpen, learnOpen, recallsOpen]);
+
+  const canScan = useMemo(() => {
+    if (mode === "barcode") return barcode.trim().length >= 8;
+    if (mode === "photo") return Boolean(imageBytes) || ingredients.trim().length >= 20;
+    if (mode === "qr") return Boolean(imageUrl) || qrValue.trim().length >= 4;
+    return ingredients.trim().length >= 20;
+  }, [barcode, imageBytes, imageUrl, ingredients, mode, qrValue]);
+
+  const dictionaryItems = useMemo(() => {
+    const query = dictionaryQuery.toLowerCase().trim();
+    if (!query) return ADDITIVE_DICTIONARY;
+    return ADDITIVE_DICTIONARY.filter((item) =>
+      [item.name, item.purpose, item.family, ...item.aliases].some((value) => value.toLowerCase().includes(query)),
+    );
+  }, [dictionaryQuery]);
+
+  const compareReports = useMemo(() => {
+    const all = report ? [report, ...history] : history;
+    return all.filter((item, index) => all.findIndex((candidate) => candidate.id === item.id) === index);
+  }, [history, report]);
+
+  const leftReport = compareReports.find((item) => item.id === compareLeftId) || null;
+  const rightReport = compareReports.find((item) => item.id === compareRightId) || null;
+  const favoriteSet = useMemo(() => new Set(favoriteIds), [favoriteIds]);
+  const canOfferSync = account.status === "signed-in" && history.length > 0 && !hasLocalSyncConsent;
+  const storedDisclosure = report?.productInfo?.disclosure;
+  const displayedDisclosure = disclosureResult?.status === "analyzed"
+    ? disclosureResult
+    : isDisclosureSuccess(storedDisclosure) ? storedDisclosure : null;
+
+  const stopCamera = (message = "Camera stopped. You can use the typed or image fallback.") => {
+    cameraRequestRef.current += 1;
+    cameraSessionRef.current?.stop();
+    cameraSessionRef.current = null;
+    setCameraMode(null);
+    setCameraState("idle");
+    setCameraMessage(message);
+  };
+
+  const openDialog = (setOpen: (open: boolean) => void) => {
+    if (cameraMode || cameraState === "starting" || cameraSessionRef.current || videoRef.current?.srcObject) {
+      stopCamera("Camera stopped when another panel opened. You can use a fallback input when you return.");
+    }
+    setOpen(true);
+  };
+
+  const selectMode = (nextMode: ScanMode) => {
+    if (cameraMode) stopCamera();
+    if (nextMode !== mode) {
+      setCameraState("idle");
+      setCameraMessage("");
+    }
+    setMode(nextMode);
+    setError("");
+  };
+
+  const handleModeTabKey = (event: ReactKeyboardEvent<HTMLButtonElement>, currentMode: ScanMode) => {
+    const modes: ScanMode[] = ["photo", "barcode", "qr", "ingredients"];
+    const currentIndex = modes.indexOf(currentMode);
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (currentIndex + 1) % modes.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (currentIndex - 1 + modes.length) % modes.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = modes.length - 1;
+    else return;
+    event.preventDefault();
+    const nextMode = modes[nextIndex];
+    selectMode(nextMode);
+    document.getElementById(`scan-tab-${nextMode}`)?.focus();
+  };
+
+  const startCamera = async (kind: CameraScanKind) => {
+    if (cameraState === "starting" || cameraState === "active") return;
+    if (!isCameraInputSupported()) {
+      setCameraState("error");
+      setCameraMessage(kind === "barcode"
+        ? "Camera scanning is unsupported here. Type the UPC, EAN, or GTIN below; hardware scanners still work."
+        : "Camera scanning is unsupported here. Upload a QR image or paste its destination instead.");
+      return;
+    }
+    cameraSessionRef.current?.stop();
+    cameraSessionRef.current = null;
+    const requestId = cameraRequestRef.current + 1;
+    cameraRequestRef.current = requestId;
+    setCameraMode(kind);
+    setCameraState("starting");
+    setCameraMessage("Camera permission is requested only for this scan.");
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const video = videoRef.current;
+    if (cameraRequestRef.current !== requestId) return;
+    if (!video) {
+      setCameraMode(null);
+      setCameraState("error");
+      setCameraMessage("Camera preview could not start. Type the barcode or use the QR image and URL fallbacks instead.");
+      return;
+    }
+    try {
+      const session = await startCameraScanner({
+        kind,
+        video,
+        onStatus: setCameraMessage,
+        onCapture: (value) => {
+          if (kind === "barcode") {
+            const normalized = normalizeGtin(value);
+            if (!normalized) {
+              setCameraMessage("A code was detected, but it was not a valid UPC/EAN/GTIN checksum. Keep the code steady or type the digits below.");
+              return;
+            }
+            setBarcode(normalized);
+            setBarcodeLookup(null);
+            setCameraMessage(`Barcode ${normalized} captured and normalized. Choose Analyze this food to look it up.`);
+          } else {
+            if (!value.trim()) return;
+            setQrValue(value.trim());
+            setQrPreview(null);
+            setDisclosureResult(null);
+            setCameraMessage("QR destination captured. Review it before choosing Analyze disclosure.");
+          }
+          cameraSessionRef.current?.stop();
+          cameraSessionRef.current = null;
+          setCameraMode(null);
+          setCameraState("captured");
+        },
+      });
+      if (cameraRequestRef.current !== requestId) {
+        session.stop();
+        return;
+      }
+      cameraSessionRef.current = session;
+      setCameraState("active");
+    } catch (caught) {
+      if (cameraRequestRef.current !== requestId) return;
+      cameraSessionRef.current?.stop();
+      cameraSessionRef.current = null;
+      setCameraMode(null);
+      setCameraState("error");
+      setCameraMessage(cameraErrorMessage(caught));
+    }
+  };
+
+  const onImage = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setError("");
+    setScanStage("");
+    try {
+      const nextImageBytes = await file.arrayBuffer();
+      const nextImageUrl = URL.createObjectURL(new Blob([nextImageBytes], { type: file.type || "image/jpeg" }));
+      if (imageUrl) URL.revokeObjectURL(imageUrl);
+      setImageName(file.name);
+      setImageBytes(nextImageBytes);
+      setImageUrl(nextImageUrl);
+      if (mode === "qr") {
+        setQrPreview(null);
+        setDisclosureResult(null);
+      }
+    } catch {
+      setImageBytes(null);
+      setError("This image could not be read. Try choosing it again or use the text scanner.");
+    }
+  };
+
+  const storeHistory = (nextHistory: ScanReport[]) => {
+    setHistory(nextHistory);
+    try {
+      window.localStorage.setItem("foodmonocle-history", JSON.stringify(nextHistory));
+    } catch {
+      // Reports remain available in the current session when storage is blocked.
+    }
+  };
+
+  const applyCloudLibrary = useCallback((library: CloudLibraryState, mergeWithLocal = true) => {
+    const cloudReports = library.scans.map(scanReportFromCloudRecord).map(normalizeSavedReport);
+    setHistory((currentHistory) => {
+      const nextHistory = mergeWithLocal ? mergeLocalAndCloudScans(currentHistory, cloudReports).slice(0, 30) : cloudReports.slice(0, 30);
+      try {
+        window.localStorage.setItem("foodmonocle-history", JSON.stringify(nextHistory));
+      } catch {
+        // Reports remain available in the current session when storage is blocked.
+      }
+      return nextHistory;
+    });
+    setFavoriteIds(library.scans.filter((item) => item.isFavorite).map((item) => item.id));
+    setSavedComparisons(library.comparisons);
+  }, []);
+
+  const loadCloudLibrary = useCallback(async () => {
+    setCloudStatus("loading");
+    setCloudMessage("");
+    try {
+      const response = await fetch("/api/library");
+      const data = (await response.json()) as CloudLibraryState | { error?: string };
+      if (!response.ok || !isCloudLibraryState(data)) throw new Error(("error" in data && data.error) || "Cloud library is unavailable.");
+      applyCloudLibrary(data);
+      setCloudStatus("idle");
+      setCloudMessage("Synchronized records were loaded into this browser.");
+    } catch (caught) {
+      setCloudStatus("error");
+      setCloudMessage(caught instanceof Error ? caught.message : "Cloud library is unavailable.");
+    }
+  }, [applyCloudLibrary]);
+
+  useEffect(() => {
     const controller = new AbortController();
     async function loadAccount() {
       try {
@@ -434,117 +722,7 @@ export default function Home() {
     }
     void loadAccount();
     return () => controller.abort();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-    };
-  }, [imageUrl]);
-
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      setHistoryOpen(false);
-      setLearnOpen(false);
-      setDictionaryOpen(false);
-      setRecallsOpen(false);
-      setCompareOpen(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, []);
-
-  const canScan = useMemo(() => {
-    if (mode === "barcode") return barcode.trim().length >= 8;
-    if (mode === "photo") return Boolean(imageBytes) || ingredients.trim().length >= 20;
-    if (mode === "qr") return Boolean(imageUrl) || qrValue.trim().length >= 4;
-    return ingredients.trim().length >= 20;
-  }, [barcode, imageBytes, imageUrl, ingredients, mode, qrValue]);
-
-  const dictionaryItems = useMemo(() => {
-    const query = dictionaryQuery.toLowerCase().trim();
-    if (!query) return ADDITIVE_DICTIONARY;
-    return ADDITIVE_DICTIONARY.filter((item) =>
-      [item.name, item.purpose, item.family, ...item.aliases].some((value) => value.toLowerCase().includes(query)),
-    );
-  }, [dictionaryQuery]);
-
-  const compareReports = useMemo(() => {
-    const all = report ? [report, ...history] : history;
-    return all.filter((item, index) => all.findIndex((candidate) => candidate.id === item.id) === index);
-  }, [history, report]);
-
-  const leftReport = compareReports.find((item) => item.id === compareLeftId) || null;
-  const rightReport = compareReports.find((item) => item.id === compareRightId) || null;
-  const favoriteSet = useMemo(() => new Set(favoriteIds), [favoriteIds]);
-  const canOfferSync = account.status === "signed-in" && history.length > 0 && !hasLocalSyncConsent;
-  const storedDisclosure = report?.productInfo?.disclosure;
-  const displayedDisclosure = disclosureResult?.status === "analyzed"
-    ? disclosureResult
-    : isDisclosureSuccess(storedDisclosure) ? storedDisclosure : null;
-
-  const onImage = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setError("");
-    setScanStage("");
-    try {
-      const nextImageBytes = await file.arrayBuffer();
-      const nextImageUrl = URL.createObjectURL(new Blob([nextImageBytes], { type: file.type || "image/jpeg" }));
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-      setImageName(file.name);
-      setImageBytes(nextImageBytes);
-      setImageUrl(nextImageUrl);
-      if (mode === "qr") {
-        setQrPreview(null);
-        setDisclosureResult(null);
-      }
-    } catch {
-      setImageBytes(null);
-      setError("This image could not be read. Try choosing it again or use the text scanner.");
-    }
-  };
-
-  const storeHistory = (nextHistory: ScanReport[]) => {
-    setHistory(nextHistory);
-    try {
-      window.localStorage.setItem("foodmonocle-history", JSON.stringify(nextHistory));
-    } catch {
-      // Reports remain available in the current session when storage is blocked.
-    }
-  };
-
-  const applyCloudLibrary = (library: CloudLibraryState, mergeWithLocal = true) => {
-    const cloudReports = library.scans.map(scanReportFromCloudRecord).map(normalizeSavedReport);
-    setHistory((currentHistory) => {
-      const nextHistory = mergeWithLocal ? mergeLocalAndCloudScans(currentHistory, cloudReports).slice(0, 30) : cloudReports.slice(0, 30);
-      try {
-        window.localStorage.setItem("foodmonocle-history", JSON.stringify(nextHistory));
-      } catch {
-        // Reports remain available in the current session when storage is blocked.
-      }
-      return nextHistory;
-    });
-    setFavoriteIds(library.scans.filter((item) => item.isFavorite).map((item) => item.id));
-    setSavedComparisons(library.comparisons);
-  };
-
-  const loadCloudLibrary = async () => {
-    setCloudStatus("loading");
-    setCloudMessage("");
-    try {
-      const response = await fetch("/api/library");
-      const data = (await response.json()) as CloudLibraryState | { error?: string };
-      if (!response.ok || !isCloudLibraryState(data)) throw new Error(("error" in data && data.error) || "Cloud library is unavailable.");
-      applyCloudLibrary(data);
-      setCloudStatus("idle");
-      setCloudMessage("Synchronized records were loaded into this browser.");
-    } catch (caught) {
-      setCloudStatus("error");
-      setCloudMessage(caught instanceof Error ? caught.message : "Cloud library is unavailable.");
-    }
-  };
+  }, [loadCloudLibrary]);
 
   const syncToCloud = async (reports: ScanReport[], comparisons: CloudComparison[] = []) => {
     if (account.status !== "signed-in") return;
@@ -580,7 +758,7 @@ export default function Home() {
     }
   };
 
-  const readPhotoText = async (imageBuffer: ArrayBuffer) => {
+  const readPhotoText = async (imageSourceUrl: string) => {
     setScanStage("Preparing on-device text reader");
     setScanProgress(4);
     const { createWorker, OEM } = await import("tesseract.js");
@@ -601,7 +779,7 @@ export default function Home() {
     });
 
     try {
-      const result = await worker.recognize(new Uint8Array(imageBuffer), { rotateAuto: true });
+      const result = await worker.recognize(imageSourceUrl, { rotateAuto: true });
       return result.data.text.replace(/\n{3,}/g, "\n\n").trim();
     } finally {
       await worker.terminate();
@@ -628,6 +806,11 @@ export default function Home() {
   };
 
   const runScan = async () => {
+    if (scanInFlightRef.current) return;
+    scanInFlightRef.current = true;
+    const requestController = new AbortController();
+    scanRequestRef.current?.abort();
+    scanRequestRef.current = requestController;
     setError("");
     setIsScanning(true);
     setScanProgress(2);
@@ -640,11 +823,11 @@ export default function Home() {
       let reportProductInfo: ScanReport["productInfo"] | undefined;
 
       if (mode === "barcode") {
-        const cleanBarcode = barcode.replace(/\D/g, "");
-        if (cleanBarcode.length < 8) throw new Error("Enter a valid UPC or EAN barcode.");
+        const cleanBarcode = normalizeGtin(barcode);
+        if (!cleanBarcode) throw new Error("Enter a valid UPC-A, UPC-E, EAN-8, EAN-13, or GTIN-14 barcode, including its check digit.");
         setScanStage("Checking Open Food Facts");
         setScanProgress(45);
-        const response = await fetch(`/api/barcode?barcode=${encodeURIComponent(cleanBarcode)}`);
+        const response = await fetchWithTimeout(`/api/barcode?barcode=${encodeURIComponent(cleanBarcode)}`, { signal: requestController.signal }, 12_000);
         const lookup = (await response.json()) as OpenFoodFactsLookupResult | { error?: string };
         if ("error" in lookup && lookup.error) throw new Error(lookup.error);
         const nextLookup = lookup as OpenFoodFactsLookupResult;
@@ -675,7 +858,8 @@ export default function Home() {
 
       if (mode === "photo" && scanText.length < 20) {
         if (!imageBytes) throw new Error("Add a clear photo of the ingredient and disclosure panel.");
-        scanText = await readPhotoText(imageBytes);
+        if (!imageUrl) throw new Error("The selected photo is no longer available. Choose it again or type the label text.");
+        scanText = await readPhotoText(imageUrl);
         if (scanText.length < 20) {
           throw new Error("The photo did not produce enough readable text. Retake it closer and in even light, or type the label text below.");
         }
@@ -707,12 +891,16 @@ export default function Home() {
       const message = caught instanceof Error ? caught.message : "The scan could not be completed.";
       setError(message);
     } finally {
+      scanInFlightRef.current = false;
+      if (scanRequestRef.current === requestController) scanRequestRef.current = null;
       setIsScanning(false);
       window.setTimeout(() => setScanStage(""), 500);
     }
   };
 
   const prepareQrDisclosure = async () => {
+    if (scanInFlightRef.current) return;
+    scanInFlightRef.current = true;
     setError("");
     setDisclosureResult(null);
     setIsScanning(true);
@@ -756,24 +944,30 @@ export default function Home() {
       setQrPreview(null);
       setError(caught instanceof Error ? caught.message : "The QR destination could not be prepared.");
     } finally {
+      scanInFlightRef.current = false;
       setIsScanning(false);
       window.setTimeout(() => setScanStage(""), 500);
     }
   };
 
   const analyzeQrDisclosure = async () => {
-    if (!qrPreview) return;
+    if (!qrPreview || scanInFlightRef.current) return;
+    scanInFlightRef.current = true;
+    const requestController = new AbortController();
+    scanRequestRef.current?.abort();
+    scanRequestRef.current = requestController;
     setError("");
     setDisclosureResult(null);
     setIsScanning(true);
     setScanProgress(8);
     setScanStage("Retrieving disclosure through FoodMonocle");
     try {
-      const response = await fetch("/api/disclosure", {
+      const response = await fetchWithTimeout("/api/disclosure", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: qrPreview.url, packageText: qrPackageText.trim() }),
-      });
+        signal: requestController.signal,
+      }, 20_000);
       const result = (await response.json()) as DisclosureAnalysisResult | { error?: string };
       if (!("status" in result)) throw new Error(result.error || "The disclosure service returned an unexpected response.");
       setDisclosureResult(result);
@@ -800,6 +994,8 @@ export default function Home() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The disclosure page could not be analyzed.");
     } finally {
+      scanInFlightRef.current = false;
+      if (scanRequestRef.current === requestController) scanRequestRef.current = null;
       setIsScanning(false);
       window.setTimeout(() => setScanStage(""), 500);
     }
@@ -857,7 +1053,7 @@ export default function Home() {
 
   const openDictionary = (query = "") => {
     setDictionaryQuery(query);
-    setDictionaryOpen(true);
+    openDialog(setDictionaryOpen);
   };
 
   const openRecallWatch = (query = "", context?: ScanReport) => {
@@ -876,10 +1072,11 @@ export default function Home() {
     setRecallWarnings([]);
     setRecallStatus("idle");
     setRecallError("");
-    setRecallsOpen(true);
+    openDialog(setRecallsOpen);
   };
 
   const searchRecalls = async () => {
+    if (recallInFlightRef.current) return;
     const query = recallQuery.trim();
     const hasCriteria = [query, recallBrand, recallCategory, recallLot, recallDate].some((value) => value.trim().length >= 2) || recallBarcode.replace(/\D/g, "").length >= 8;
     if (!hasCriteria) {
@@ -887,6 +1084,10 @@ export default function Home() {
       setRecallError("Enter a product, brand, category, barcode, lot/code, or package date.");
       return;
     }
+    recallInFlightRef.current = true;
+    const requestController = new AbortController();
+    recallRequestRef.current?.abort();
+    recallRequestRef.current = requestController;
     setRecallStatus("loading");
     setRecallError("");
     setRecallWarnings([]);
@@ -899,7 +1100,7 @@ export default function Home() {
         lot: recallLot.trim(),
         date: recallDate.trim(),
       });
-      const response = await fetch(`/api/recalls?${params.toString()}`);
+      const response = await fetchWithTimeout(`/api/recalls?${params.toString()}`, { signal: requestController.signal }, 15_000);
       const data = (await response.json()) as {
         results?: RecallResult[];
         sources?: RecallSourceStatus[];
@@ -916,13 +1117,16 @@ export default function Home() {
     } catch (caught) {
       setRecallStatus("error");
       setRecallError(caught instanceof Error ? caught.message : "Recall search is temporarily unavailable.");
+    } finally {
+      recallInFlightRef.current = false;
+      if (recallRequestRef.current === requestController) recallRequestRef.current = null;
     }
   };
 
   const openCompare = () => {
     setCompareLeftId((current) => current || compareReports[0]?.id || "");
     setCompareRightId((current) => current || compareReports[1]?.id || "");
-    setCompareOpen(true);
+    openDialog(setCompareOpen);
   };
 
   const loadCompareExamples = () => {
@@ -1044,10 +1248,10 @@ export default function Home() {
           <button className="nav-button" type="button" onClick={openCompare}>
             <ArrowRightLeft size={17} /> Compare
           </button>
-          <button className="nav-button" type="button" onClick={() => setHistoryOpen(true)}>
+          <button className="nav-button" type="button" onClick={() => openDialog(setHistoryOpen)}>
             <History size={17} /> History <span className="count-badge">{history.length}</span>
           </button>
-          <button className="method-link" type="button" onClick={() => setLearnOpen(true)} aria-label="How FoodMonocle works">
+          <button className="method-link" type="button" onClick={() => openDialog(setLearnOpen)} aria-label="How FoodMonocle works">
             <CircleHelp size={18} />
           </button>
           {account.status === "signed-in" ? (
@@ -1061,7 +1265,7 @@ export default function Home() {
           )}
           <span className="beta-badge">Beta 0.2</span>
         </nav>
-        <button className="mobile-menu" type="button" onClick={() => setLearnOpen(true)} aria-label="Open FoodMonocle method">
+        <button className="mobile-menu" type="button" onClick={() => openDialog(setLearnOpen)} aria-label="Open FoodMonocle method">
           <Menu size={22} />
         </button>
       </header>
@@ -1084,7 +1288,7 @@ export default function Home() {
           <div className="scope-panel">
             <div className="scope-heading">
               <strong>What one scan checks</strong>
-              <button type="button" onClick={() => setLearnOpen(true)}>View method <ChevronRight size={15} /></button>
+              <button type="button" onClick={() => openDialog(setLearnOpen)}>View method <ChevronRight size={15} /></button>
             </div>
             <div className="scope-grid">
               <span><FlaskConical size={18} /> Bioengineered disclosure</span>
@@ -1107,24 +1311,29 @@ export default function Home() {
           </div>
 
           <div className="mode-tabs four-tabs" role="tablist" aria-label="Scan input type">
-            <button className={mode === "photo" ? "active" : ""} type="button" role="tab" aria-selected={mode === "photo"} onClick={() => { setMode("photo"); setError(""); }}>
+            <button id="scan-tab-photo" className={mode === "photo" ? "active" : ""} type="button" role="tab" aria-selected={mode === "photo"} aria-controls="scan-panel-photo" tabIndex={mode === "photo" ? 0 : -1} onKeyDown={(event) => handleModeTabKey(event, "photo")} onClick={() => selectMode("photo")}>
               <Camera size={17} /> Photo
             </button>
-            <button className={mode === "barcode" ? "active" : ""} type="button" role="tab" aria-selected={mode === "barcode"} onClick={() => { setMode("barcode"); setError(""); }}>
+            <button id="scan-tab-barcode" className={mode === "barcode" ? "active" : ""} type="button" role="tab" aria-selected={mode === "barcode"} aria-controls="scan-panel-barcode" tabIndex={mode === "barcode" ? 0 : -1} onKeyDown={(event) => handleModeTabKey(event, "barcode")} onClick={() => selectMode("barcode")}>
               <Barcode size={17} /> Barcode
             </button>
-            <button className={mode === "qr" ? "active" : ""} type="button" role="tab" aria-selected={mode === "qr"} onClick={() => { setMode("qr"); setError(""); }}>
+            <button id="scan-tab-qr" className={mode === "qr" ? "active" : ""} type="button" role="tab" aria-selected={mode === "qr"} aria-controls="scan-panel-qr" tabIndex={mode === "qr" ? 0 : -1} onKeyDown={(event) => handleModeTabKey(event, "qr")} onClick={() => selectMode("qr")}>
               <QrCode size={17} /> QR
             </button>
-            <button className={mode === "ingredients" ? "active" : ""} type="button" role="tab" aria-selected={mode === "ingredients"} onClick={() => { setMode("ingredients"); setError(""); }}>
+            <button id="scan-tab-ingredients" className={mode === "ingredients" ? "active" : ""} type="button" role="tab" aria-selected={mode === "ingredients"} aria-controls="scan-panel-ingredients" tabIndex={mode === "ingredients" ? 0 : -1} onKeyDown={(event) => handleModeTabKey(event, "ingredients")} onClick={() => selectMode("ingredients")}>
               <FileText size={17} /> Text
             </button>
           </div>
 
           {(mode === "photo" || mode === "qr") && (
-            <div className="input-stack">
+            <div className="input-stack" id={`scan-panel-${mode}`} role="tabpanel" aria-labelledby={`scan-tab-${mode}`}>
+              {mode === "qr" && (
+                <button className="camera-start-button" type="button" onClick={() => void startCamera("qr")} disabled={cameraState === "starting" || cameraState === "active"}>
+                  <Camera size={17} /> Scan QR with camera
+                </button>
+              )}
               <label className={`upload-zone ${imageUrl ? "has-image" : ""}`}>
-                <input type="file" accept="image/*" onChange={onImage} />
+                <input type="file" accept="image/*" onChange={onImage} aria-label={mode === "qr" ? "Upload a package QR image" : "Upload a food label image"} />
                 {imageUrl ? (
                   <>
                     <Image src={imageUrl} alt={mode === "qr" ? "Selected QR code" : "Selected food label"} fill unoptimized />
@@ -1182,13 +1391,16 @@ export default function Home() {
           )}
 
           {mode === "barcode" && (
-            <div className="barcode-panel">
+            <div className="barcode-panel" id="scan-panel-barcode" role="tabpanel" aria-labelledby="scan-tab-barcode">
               <span className="barcode-graphic"><Barcode size={42} /></span>
+              <button className="camera-start-button" type="button" onClick={() => void startCamera("barcode")} disabled={cameraState === "starting" || cameraState === "active"}>
+                <Camera size={17} /> Scan barcode with camera
+              </button>
               <label className="text-field">
-                <span>UPC or EAN barcode</span>
+                <span>UPC, EAN, or GTIN barcode</span>
                 <div className="barcode-input-wrap">
                   <Barcode size={20} />
-                  <input inputMode="numeric" value={barcode} onChange={(event) => { setBarcode(event.target.value.replace(/\D/g, "")); setBarcodeLookup(null); }} placeholder="Enter the number below the bars" />
+                  <input inputMode="numeric" autoComplete="off" value={barcode} onChange={(event) => { setBarcode(event.target.value.replace(/\D/g, "").slice(0, 14)); setBarcodeLookup(null); }} onKeyDown={(event) => { if (event.key === "Enter" && !isScanning) void runScan(); }} placeholder="Enter or scan the number below the bars" />
                 </div>
               </label>
               <button className="text-action" type="button" onClick={loadDemoBarcode}>Use demo barcode <span>{DEMO_BARCODE}</span></button>
@@ -1200,7 +1412,7 @@ export default function Home() {
           )}
 
           {mode === "ingredients" && (
-            <div className="input-stack">
+            <div className="input-stack" id="scan-panel-ingredients" role="tabpanel" aria-labelledby="scan-tab-ingredients">
               <label className="text-field compact-field">
                 <span>Product or brand name <small>optional, useful for recalls</small></span>
                 <input value={productName} onChange={(event) => setProductName(event.target.value)} placeholder="Example: Green Valley corn chips" />
@@ -1220,10 +1432,36 @@ export default function Home() {
             </div>
           )}
 
-          {error && <div className="form-error" role="alert"><Info size={17} /> {error}</div>}
+          {cameraMode && (
+            <div className="camera-preview" role="region" aria-label={`${cameraMode === "qr" ? "QR" : "Barcode"} camera scanner`}>
+              <video ref={videoRef} muted playsInline aria-label="Live camera preview. Frames remain on this device." />
+              <div className="camera-guide" aria-hidden="true" />
+              <div className="camera-preview-bar">
+                <span role="status" aria-live="polite"><Camera size={15} /> {cameraMessage}</span>
+                <button type="button" onClick={() => stopCamera()} aria-label="Close camera scanner"><X size={18} /></button>
+              </div>
+            </div>
+          )}
+
+          {cameraMessage && !cameraMode && (
+            <div className={`camera-feedback ${cameraState}`} role="status" aria-live="polite">
+              <Camera size={16} />
+              <span>{cameraMessage}</span>
+              {cameraState === "error" && (mode === "barcode" || mode === "qr") && (
+                <button type="button" onClick={() => void startCamera(mode)}>Try camera again</button>
+              )}
+            </div>
+          )}
+
+          {error && (
+            <div className="form-error" role="alert">
+              <Info size={17} /> <span>{error}</span>
+              <button type="button" disabled={isScanning} onClick={() => void (mode === "qr" ? (qrPreview ? analyzeQrDisclosure() : prepareQrDisclosure()) : runScan())}>Try again</button>
+            </div>
+          )}
 
           {isScanning && (
-            <div className="scan-progress" aria-live="polite">
+            <div className="scan-progress" role="status" aria-live="polite" aria-atomic="true">
               <div><span>{scanStage}</span><strong>{scanProgress}%</strong></div>
               <div className="scan-progress-track"><span style={{ width: `${scanProgress}%` }} /></div>
             </div>
@@ -1418,7 +1656,7 @@ export default function Home() {
       <footer className="site-footer">
         <Logo />
         <p>Independent, cautious food-label education. FoodMonocle explains disclosed evidence without judging personal suitability.</p>
-        <div><button type="button" onClick={() => setLearnOpen(true)}>Method & sources</button><span>Beta 0.2</span></div>
+        <div><button type="button" onClick={() => openDialog(setLearnOpen)}>Method & sources</button><span>Beta 0.2</span></div>
       </footer>
 
       <nav className="mobile-nav" aria-label="Mobile navigation">
@@ -1426,7 +1664,7 @@ export default function Home() {
         <button type="button" onClick={openCompare}><ArrowRightLeft size={19} /><span>Compare</span></button>
         <button type="button" onClick={() => openDictionary()}><BookText size={19} /><span>Additives</span></button>
         <button type="button" onClick={() => openRecallWatch(report?.productName || "", report || undefined)}><TriangleAlert size={19} /><span>Recalls</span></button>
-        <button type="button" onClick={() => setHistoryOpen(true)}><History size={19} /><span>History</span></button>
+        <button type="button" onClick={() => openDialog(setHistoryOpen)}><History size={19} /><span>History</span></button>
       </nav>
 
       {historyOpen && (
@@ -1448,7 +1686,7 @@ export default function Home() {
               ) : (
                 <a href={account.signInPath}>Sign in to sync</a>
               )}
-              {cloudMessage && <small className={cloudStatus === "error" ? "sync-error" : ""}>{cloudMessage}</small>}
+              {cloudMessage && <small className={cloudStatus === "error" ? "sync-error" : ""} role="status" aria-live="polite">{cloudMessage}</small>}
             </div>
             {history.length ? (
               <>
@@ -1531,8 +1769,8 @@ export default function Home() {
             {recallStatus === "idle" && (
               <div className="recall-idle"><TriangleAlert size={29} /><strong>Search two official recall sources</strong><span>FoodMonocle ranks UPC, lot, and package-date matches above brand, product, and category wording. Always compare the full official notice with the package.</span></div>
             )}
-            {recallStatus === "loading" && <div className="loading-state"><LoaderCircle className="spin" size={25} /> Checking FDA and USDA-FSIS records...</div>}
-            {recallStatus === "error" && <div className="form-error recall-error"><AlertCircle size={17} /> {recallError}</div>}
+            {recallStatus === "loading" && <div className="loading-state" role="status" aria-live="polite"><LoaderCircle className="spin" size={25} /> Checking FDA and USDA-FSIS records...</div>}
+            {recallStatus === "error" && <div className="form-error recall-error" role="alert"><AlertCircle size={17} /> <span>{recallError}</span><button type="button" onClick={() => void searchRecalls()}>Try again</button></div>}
             {recallStatus === "done" && (
               <div className="recall-results">
                 <div className="recall-summary">
@@ -1647,6 +1885,16 @@ export default function Home() {
               <article><span>3</span><div><strong>Explain formulation clues</strong><p>Translate additive purposes and count supported ultra-processing markers without assigning a fear score.</p></div></article>
               <article><span>4</span><div><strong>Show evidence and limits</strong><p>Quote the matched text, identify the source, show confidence, and state what a scan cannot prove.</p></div></article>
             </div>
+            <section className="privacy-summary" aria-labelledby="privacy-summary-title">
+              <h3 id="privacy-summary-title">Privacy and data handling</h3>
+              <p>Scanning does not require an account. FoodMonocle does not use third-party advertising or behavioral tracking.</p>
+              <dl>
+                <div><dt>On this device</dt><dd>Signed-out history, favorites, comparisons, OCR, QR decoding, and live camera frames remain in this browser. Camera frames and uploaded label images are not uploaded or stored.</dd></div>
+                <div><dt>Optional synchronization</dt><dd>After Sign in with ChatGPT and explicit consent, D1 stores extracted label text, product information, evidence, analysis results, favorites, and comparisons for the authenticated owner. It does not store uploaded images.</dd></div>
+                <div><dt>Product and recall requests</dt><dd>Barcode lookup contacts Open Food Facts through FoodMonocle. Recall searches contact FDA and USDA-FSIS sources. Unavailable sources remain identified as unavailable, not as negative findings.</dd></div>
+                <div><dt>Digital disclosures</dt><dd>Only after you confirm a decoded destination does FoodMonocle&apos;s server retrieve that page without forwarding cookies, authorization, account identity, or referrer information.</dd></div>
+              </dl>
+            </section>
             <div className="source-box">
               <strong>Regulatory and data starting points</strong>
               <a href={SOURCE_REFERENCES.bioengineered.url} target="_blank" rel="noreferrer">{SOURCE_REFERENCES.bioengineered.label} <span>Last reviewed {SOURCE_REFERENCES.bioengineered.lastReviewed}</span> <ChevronRight size={15} /></a>

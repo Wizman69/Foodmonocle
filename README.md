@@ -104,6 +104,27 @@ Anonymous users can still scan food and keep local browser history. Old local
 history is not uploaded automatically after sign-in; users must choose
 `Sync local history` before those local records are copied to D1.
 
+## Phase 6A Production Boundaries
+
+Phase 6A adds local launch hardening without provisioning or changing production
+D1. Production still needs platform-level rate limits and monitoring for barcode,
+recall, disclosure, and authenticated library routes. The app intentionally does
+not use a per-isolate in-memory counter because Cloudflare Worker isolates do not
+provide a reliable shared global rate-limit boundary.
+
+The remaining npm audit findings cannot currently be removed without incompatible
+tool downgrades:
+
+- Production: Next's bundled PostCSS version is below the patched advisory range;
+  npm proposes downgrading Next to 9.3.3. User-provided CSS is not accepted or
+  stringified by FoodMonocle.
+- Development: Drizzle Kit retains an older esbuild chain; npm proposes
+  downgrading Drizzle Kit to 0.18.1. Keep the development server private and do
+  not expose it to untrusted networks.
+
+Reassess both advisory families when compatible Next and Drizzle Kit releases are
+available. Do not use `npm audit fix --force` for this project.
+
 ## Diagnostic Commands
 
 - `npm run install:ci`: perform the one bounded lockfile install

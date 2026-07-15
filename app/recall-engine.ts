@@ -502,7 +502,11 @@ export async function searchOfficialRecalls(
     .filter((result): result is RecallResult & { _score?: number } => Boolean(result))
     .sort((left, right) => (right._score || 0) - (left._score || 0) || right.date.localeCompare(left.date))
     .slice(0, 12)
-    .map(({ _score: _ignored, ...result }) => result);
+    .map((result) => {
+      const publicResult = { ...result };
+      delete publicResult._score;
+      return publicResult;
+    });
   const warnings = sources
     .filter((source) => source.status === "unavailable")
     .map((source) => ("message" in source && source.message ? source.message : `${source.name} is unavailable.`));
