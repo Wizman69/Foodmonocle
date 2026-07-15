@@ -55,7 +55,8 @@ export const SECOND_SAMPLE_LABEL =
 export const CULTIVATED_SAMPLE_LABEL =
   "Ingredients: cell-cultivated chicken, water, sunflower oil, pea protein, salt, natural flavor. Contains: pea. This product contains cultivated chicken made from cultured animal cells.";
 
-export const DEMO_BARCODE = "041196101266";
+export const DEMO_BARCODE = "3017620422003";
+export const USER_FACING_DEMO_BARCODES = [DEMO_BARCODE] as const;
 
 export const SOURCE_REFERENCES = {
   bioengineered: {

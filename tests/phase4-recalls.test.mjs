@@ -112,7 +112,7 @@ test("USDA-FSIS records expose affected products, reason, official URL, and iden
 test("a conflicting barcode excludes a descriptive product-name result", async () => {
   const { searchOfficialRecalls } = await loadRecallEngine();
   const response = await searchOfficialRecalls(
-    { product: "blueberry muffin", barcode: "999999999999" },
+    { product: "blueberry muffin", barcode: "036000291452" },
     sourceFetch({ fsis: [] }),
     () => "2026-07-15T12:10:00.000Z",
   );

@@ -112,6 +112,11 @@ recall, disclosure, and authenticated library routes. The app intentionally does
 not use a per-isolate in-memory counter because Cloudflare Worker isolates do not
 provide a reliable shared global rate-limit boundary.
 
+Keep disclosure DNS behavior on the Phase 6B production checklist: local DNS or
+emulator behavior can resolve an otherwise public host into a protected address
+range. Recheck representative disclosure destinations in the deployed Cloudflare
+runtime without weakening blocked-address handling.
+
 The remaining npm audit findings cannot currently be removed without incompatible
 tool downgrades:
 

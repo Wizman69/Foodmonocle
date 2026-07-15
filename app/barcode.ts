@@ -9,3 +9,10 @@ export function normalizeGtin(value: string) {
   }
   return (10 - (sum % 10)) % 10 === expected ? digits : "";
 }
+
+export function prepareBarcodeLookup(value: string) {
+  const barcode = normalizeGtin(value);
+  return barcode
+    ? { barcode, path: `/api/barcode?barcode=${encodeURIComponent(barcode)}` }
+    : null;
+}

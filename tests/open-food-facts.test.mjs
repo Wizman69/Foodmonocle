@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const moduleUrl = new URL("../app/open-food-facts.ts", import.meta.url);
@@ -14,11 +15,31 @@ function jsonResponse(body, init = {}) {
   });
 }
 
+test("every user-facing demo barcode validates and prepares the production lookup path", async () => {
+  const [{ normalizeGtin, prepareBarcodeLookup }, { DEMO_BARCODE, USER_FACING_DEMO_BARCODES }, page] = await Promise.all([
+    import(new URL("../app/barcode.ts", import.meta.url).href),
+    import(new URL("../app/food-intelligence.ts", import.meta.url).href),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.deepEqual(USER_FACING_DEMO_BARCODES, [DEMO_BARCODE]);
+  for (const barcode of USER_FACING_DEMO_BARCODES) {
+    assert.equal(normalizeGtin(barcode), barcode);
+    assert.deepEqual(prepareBarcodeLookup(barcode), {
+      barcode,
+      path: `/api/barcode?barcode=${encodeURIComponent(barcode)}`,
+    });
+  }
+  assert.match(page, /setBarcode\(DEMO_BARCODE\)/);
+  assert.match(page, /setScanStage\("Checking Open Food Facts"\)/);
+  assert.match(page, /fetchWithTimeout\(preparedBarcode\.path/);
+});
+
 test("successful barcode lookup maps Open Food Facts product data for evidence analysis", async () => {
   const { lookupOpenFoodFactsBarcode } = await loadOpenFoodFacts();
   const fetches = [];
   const result = await lookupOpenFoodFactsBarcode(
-    " 041196101266 ",
+    " 3017620422003 ",
     async (url, init) => {
       fetches.push({ url: url.toString(), userAgent: init?.headers?.["User-Agent"] });
       return jsonResponse({
@@ -53,7 +74,7 @@ test("successful barcode lookup maps Open Food Facts product data for evidence a
   assert.equal(result.product.nutrition.energyKcal100g, 510);
   assert.equal(result.source.name, "Open Food Facts");
   assert.equal(result.source.retrievedAt, "2026-07-14T21:30:00.000Z");
-  assert.equal(result.source.url, "https://world.openfoodfacts.org/product/041196101266");
+  assert.equal(result.source.url, "https://world.openfoodfacts.org/product/3017620422003");
   assert.equal(fetches[0].url.includes("fields="), true);
   assert.match(fetches[0].userAgent, /FoodMonocle/);
 });
@@ -77,7 +98,7 @@ test("incomplete product information keeps partial fields and requests label fal
   const { lookupOpenFoodFactsBarcode } = await loadOpenFoodFacts();
   const { analyzeText } = await import(new URL("../app/food-intelligence.ts", import.meta.url).href);
   const result = await lookupOpenFoodFactsBarcode(
-    "12345678",
+    "96385074",
     async () =>
       jsonResponse({
         status: 1,
@@ -110,7 +131,7 @@ test("incomplete product information keeps partial fields and requests label fal
 test("network or API failure returns clear error and fallback guidance", async () => {
   const { lookupOpenFoodFactsBarcode } = await loadOpenFoodFacts();
   const result = await lookupOpenFoodFactsBarcode(
-    "041196101266",
+    "3017620422003",
     async () => {
       throw new Error("socket closed");
     },

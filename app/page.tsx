@@ -70,6 +70,7 @@ import {
   type CameraScanSession,
 } from "./camera-scanner";
 import { fetchWithTimeout } from "./request-resilience";
+import { prepareBarcodeLookup } from "./barcode";
 
 type BarcodeProductLookup = Extract<OpenFoodFactsLookupResult, { status: "found" | "incomplete" }>;
 
@@ -823,11 +824,11 @@ export default function Home() {
       let reportProductInfo: ScanReport["productInfo"] | undefined;
 
       if (mode === "barcode") {
-        const cleanBarcode = normalizeGtin(barcode);
-        if (!cleanBarcode) throw new Error("Enter a valid UPC-A, UPC-E, EAN-8, EAN-13, or GTIN-14 barcode, including its check digit.");
+        const preparedBarcode = prepareBarcodeLookup(barcode);
+        if (!preparedBarcode) throw new Error("Enter a valid UPC-A, UPC-E, EAN-8, EAN-13, or GTIN-14 barcode, including its check digit.");
         setScanStage("Checking Open Food Facts");
         setScanProgress(45);
-        const response = await fetchWithTimeout(`/api/barcode?barcode=${encodeURIComponent(cleanBarcode)}`, { signal: requestController.signal }, 12_000);
+        const response = await fetchWithTimeout(preparedBarcode.path, { signal: requestController.signal }, 12_000);
         const lookup = (await response.json()) as OpenFoodFactsLookupResult | { error?: string };
         if ("error" in lookup && lookup.error) throw new Error(lookup.error);
         const nextLookup = lookup as OpenFoodFactsLookupResult;
