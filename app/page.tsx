@@ -11,12 +11,14 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleHelp,
+  Cloud,
   Clock3,
   Database,
   ExternalLink,
   FileText,
   FlaskConical,
   Gauge,
+  Heart,
   History,
   Info,
   Leaf,
@@ -30,7 +32,9 @@ import {
   ShieldCheck,
   Sparkles,
   TriangleAlert,
+  Trash2,
   Upload,
+  UserRound,
   X,
 } from "lucide-react";
 import Image from "next/image";
@@ -48,6 +52,12 @@ import {
   type ScanMode,
   type ScanReport,
 } from "./food-intelligence";
+import {
+  mergeLocalAndCloudScans,
+  scanReportFromCloudRecord,
+  type CloudComparison,
+  type CloudLibraryState,
+} from "./cloud-library";
 import type { OpenFoodFactsLookupResult, OpenFoodFactsNutrition } from "./open-food-facts";
 
 type RecallResult = {
@@ -62,6 +72,11 @@ type RecallResult = {
 };
 
 type BarcodeProductLookup = Extract<OpenFoodFactsLookupResult, { status: "found" | "incomplete" }>;
+
+type AccountState =
+  | { status: "loading"; signInPath: string; signOutPath: string }
+  | { status: "signed-out"; signInPath: string; signOutPath: string }
+  | { status: "signed-in"; displayName: string; email: string; signInPath: string; signOutPath: string };
 
 function Logo() {
   return (
@@ -134,6 +149,10 @@ function formatDateTime(value: string) {
 
 function hasBarcodeProduct(result: OpenFoodFactsLookupResult | null): result is BarcodeProductLookup {
   return Boolean(result && "product" in result);
+}
+
+function isCloudLibraryState(value: CloudLibraryState | { error?: string }): value is CloudLibraryState {
+  return Array.isArray((value as CloudLibraryState).scans) && Array.isArray((value as CloudLibraryState).comparisons);
 }
 
 function nutritionRows(nutrition: OpenFoodFactsNutrition) {
@@ -277,6 +296,12 @@ export default function Home() {
   const [compareOpen, setCompareOpen] = useState(false);
   const [compareLeftId, setCompareLeftId] = useState("");
   const [compareRightId, setCompareRightId] = useState("");
+  const [account, setAccount] = useState<AccountState>({ status: "loading", signInPath: "/signin-with-chatgpt", signOutPath: "/signout-with-chatgpt" });
+  const [cloudStatus, setCloudStatus] = useState<"idle" | "loading" | "syncing" | "error">("idle");
+  const [cloudMessage, setCloudMessage] = useState("");
+  const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
+  const [savedComparisons, setSavedComparisons] = useState<CloudComparison[]>([]);
+  const [hasLocalSyncConsent, setHasLocalSyncConsent] = useState(false);
 
   useEffect(() => {
     const restoreHistory = window.setTimeout(() => {
@@ -284,11 +309,70 @@ export default function Home() {
         const saved = window.localStorage.getItem("foodmonocle-history");
         const parsed = saved ? (JSON.parse(saved) as ScanReport[]) : [];
         setHistory(parsed.map(normalizeSavedReport));
+        const savedFavorites = window.localStorage.getItem("foodmonocle-favorites");
+        setFavoriteIds(savedFavorites ? (JSON.parse(savedFavorites) as string[]) : []);
+        const savedComparisonsText = window.localStorage.getItem("foodmonocle-comparisons");
+        setSavedComparisons(savedComparisonsText ? (JSON.parse(savedComparisonsText) as CloudComparison[]) : []);
       } catch {
         setHistory([]);
+        setFavoriteIds([]);
+        setSavedComparisons([]);
       }
     }, 0);
     return () => window.clearTimeout(restoreHistory);
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("foodmonocle-favorites", JSON.stringify(favoriteIds));
+    } catch {
+      // Favorites remain available in the current session when storage is blocked.
+    }
+  }, [favoriteIds]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("foodmonocle-comparisons", JSON.stringify(savedComparisons));
+    } catch {
+      // Saved comparisons remain available in the current session when storage is blocked.
+    }
+  }, [savedComparisons]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function loadAccount() {
+      try {
+        const response = await fetch("/api/account", { signal: controller.signal });
+        const data = (await response.json()) as {
+          authenticated: boolean;
+          user?: { displayName?: string; email?: string };
+          signInPath?: string;
+          signOutPath?: string;
+        };
+        if (data.authenticated && data.user?.email) {
+          setAccount({
+            status: "signed-in",
+            displayName: data.user.displayName || data.user.email,
+            email: data.user.email,
+            signInPath: data.signInPath || "/signin-with-chatgpt",
+            signOutPath: data.signOutPath || "/signout-with-chatgpt",
+          });
+          void loadCloudLibrary();
+        } else {
+          setAccount({
+            status: "signed-out",
+            signInPath: data.signInPath || "/signin-with-chatgpt",
+            signOutPath: data.signOutPath || "/signout-with-chatgpt",
+          });
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setAccount({ status: "signed-out", signInPath: "/signin-with-chatgpt", signOutPath: "/signout-with-chatgpt" });
+        }
+      }
+    }
+    void loadAccount();
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -332,6 +416,8 @@ export default function Home() {
 
   const leftReport = compareReports.find((item) => item.id === compareLeftId) || null;
   const rightReport = compareReports.find((item) => item.id === compareRightId) || null;
+  const favoriteSet = useMemo(() => new Set(favoriteIds), [favoriteIds]);
+  const canOfferSync = account.status === "signed-in" && history.length > 0 && !hasLocalSyncConsent;
 
   const onImage = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -360,9 +446,69 @@ export default function Home() {
     }
   };
 
+  const applyCloudLibrary = (library: CloudLibraryState, mergeWithLocal = true) => {
+    const cloudReports = library.scans.map(scanReportFromCloudRecord).map(normalizeSavedReport);
+    setHistory((currentHistory) => {
+      const nextHistory = mergeWithLocal ? mergeLocalAndCloudScans(currentHistory, cloudReports).slice(0, 30) : cloudReports.slice(0, 30);
+      try {
+        window.localStorage.setItem("foodmonocle-history", JSON.stringify(nextHistory));
+      } catch {
+        // Reports remain available in the current session when storage is blocked.
+      }
+      return nextHistory;
+    });
+    setFavoriteIds(library.scans.filter((item) => item.isFavorite).map((item) => item.id));
+    setSavedComparisons(library.comparisons);
+  };
+
+  const loadCloudLibrary = async () => {
+    setCloudStatus("loading");
+    setCloudMessage("");
+    try {
+      const response = await fetch("/api/library");
+      const data = (await response.json()) as CloudLibraryState | { error?: string };
+      if (!response.ok || !isCloudLibraryState(data)) throw new Error(("error" in data && data.error) || "Cloud library is unavailable.");
+      applyCloudLibrary(data);
+      setCloudStatus("idle");
+      setCloudMessage("Synchronized records were loaded into this browser.");
+    } catch (caught) {
+      setCloudStatus("error");
+      setCloudMessage(caught instanceof Error ? caught.message : "Cloud library is unavailable.");
+    }
+  };
+
+  const syncToCloud = async (reports: ScanReport[], comparisons: CloudComparison[] = []) => {
+    if (account.status !== "signed-in") return;
+    setCloudStatus("syncing");
+    setCloudMessage("");
+    try {
+      const response = await fetch("/api/library", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          consentToSync: true,
+          scans: reports.map((item) => ({ ...item, isFavorite: favoriteSet.has(item.id) })),
+          comparisons,
+        }),
+      });
+      const data = (await response.json()) as CloudLibraryState | { error?: string };
+      if (!response.ok || !isCloudLibraryState(data)) throw new Error(("error" in data && data.error) || "Cloud sync failed.");
+      applyCloudLibrary(data);
+      setHasLocalSyncConsent(true);
+      setCloudStatus("idle");
+      setCloudMessage("Synchronized with your signed-in account.");
+    } catch (caught) {
+      setCloudStatus("error");
+      setCloudMessage(caught instanceof Error ? caught.message : "Cloud sync failed.");
+    }
+  };
+
   const persistReport = (nextReport: ScanReport) => {
     const nextHistory = [nextReport, ...history.filter((item) => item.id !== nextReport.id)].slice(0, 12);
     storeHistory(nextHistory);
+    if (account.status === "signed-in") {
+      void syncToCloud([nextReport]);
+    }
   };
 
   const readPhotoText = async (imageBuffer: ArrayBuffer) => {
@@ -424,6 +570,7 @@ export default function Home() {
       let decodedQr = "";
       let qrUrl = "";
       let reportProductName = productName.trim() || undefined;
+      let reportProductInfo: ScanReport["productInfo"] | undefined;
 
       if (mode === "barcode") {
         const cleanBarcode = barcode.replace(/\D/g, "");
@@ -445,6 +592,16 @@ export default function Home() {
         setIngredients(scanText);
         setProductName(nextLookup.product.name);
         reportProductName = nextLookup.product.name;
+        reportProductInfo = {
+          name: nextLookup.product.name,
+          brand: nextLookup.product.brand,
+          barcode: nextLookup.product.barcode,
+          source: nextLookup.source.name,
+          sourceUrl: nextLookup.source.url,
+          sourceRetrievedAt: nextLookup.source.retrievedAt,
+          labels: nextLookup.product.labels,
+          nutrition: nextLookup.product.nutrition,
+        };
         sourceLabel = `${nextLookup.source.name} community record retrieved ${formatDateTime(nextLookup.source.retrievedAt)}`;
       }
 
@@ -490,6 +647,11 @@ export default function Home() {
         qrUrl: qrUrl || undefined,
         sourceLabel,
         limitedEvidence: mode === "barcode",
+        productInfo: reportProductInfo || {
+          name: reportProductName || productName.trim() || "Scanned food label",
+          barcode: mode === "barcode" ? barcode : undefined,
+          source: sourceLabel,
+        },
       });
       finishReport(nextReport);
     } catch (caught) {
@@ -598,6 +760,102 @@ export default function Home() {
     setCompareRightId(right.id);
   };
 
+  const toggleFavorite = async (scanId: string) => {
+    const nextIsFavorite = !favoriteSet.has(scanId);
+    const nextFavorites = nextIsFavorite ? [...favoriteIds, scanId] : favoriteIds.filter((id) => id !== scanId);
+    setFavoriteIds(nextFavorites);
+    if (account.status !== "signed-in") return;
+    setCloudStatus("syncing");
+    try {
+      const response = await fetch("/api/library", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ recordId: scanId, isFavorite: nextIsFavorite }),
+      });
+      const data = (await response.json()) as CloudLibraryState | { error?: string };
+      if (!response.ok || !isCloudLibraryState(data)) throw new Error(("error" in data && data.error) || "Favorite update failed.");
+      applyCloudLibrary(data);
+      setCloudStatus("idle");
+      setCloudMessage(nextIsFavorite ? "Favorite saved to your account." : "Favorite removed from your account.");
+    } catch (caught) {
+      setFavoriteIds(favoriteIds);
+      setCloudStatus("error");
+      setCloudMessage(caught instanceof Error ? caught.message : "Favorite update failed.");
+    }
+  };
+
+  const deleteHistoryItem = async (scanId: string) => {
+    const nextHistory = history.filter((item) => item.id !== scanId);
+    storeHistory(nextHistory);
+    setFavoriteIds((items) => items.filter((id) => id !== scanId));
+    if (report?.id === scanId) setReport(null);
+    if (account.status !== "signed-in") return;
+    setCloudStatus("syncing");
+    try {
+      const response = await fetch(`/api/library?id=${encodeURIComponent(scanId)}`, { method: "DELETE" });
+      const data = (await response.json()) as CloudLibraryState | { error?: string };
+      if (!response.ok || !isCloudLibraryState(data)) throw new Error(("error" in data && data.error) || "Delete failed.");
+      applyCloudLibrary(data, false);
+      setCloudStatus("idle");
+      setCloudMessage("Deleted that synchronized record.");
+    } catch (caught) {
+      setCloudStatus("error");
+      setCloudMessage(caught instanceof Error ? caught.message : "Delete failed.");
+    }
+  };
+
+  const deleteAllHistory = async () => {
+    storeHistory([]);
+    setFavoriteIds([]);
+    setSavedComparisons([]);
+    setReport(null);
+    if (account.status !== "signed-in") return;
+    setCloudStatus("syncing");
+    try {
+      const response = await fetch("/api/library?all=true", { method: "DELETE" });
+      const data = (await response.json()) as CloudLibraryState | { error?: string };
+      if (!response.ok || !isCloudLibraryState(data)) throw new Error(("error" in data && data.error) || "Delete all failed.");
+      applyCloudLibrary(data, false);
+      setCloudStatus("idle");
+      setCloudMessage("Deleted synchronized history for this signed-in account.");
+    } catch (caught) {
+      setCloudStatus("error");
+      setCloudMessage(caught instanceof Error ? caught.message : "Delete all failed.");
+    }
+  };
+
+  const syncLocalHistoryWithConsent = async () => {
+    setHasLocalSyncConsent(true);
+    await syncToCloud(history, savedComparisons);
+  };
+
+  const saveCurrentComparison = async () => {
+    if (!leftReport || !rightReport) return;
+    const timestamp = new Date().toISOString();
+    const nextComparison: CloudComparison = {
+      id: `comparison-${leftReport.id}-${rightReport.id}`,
+      ownerId: "local",
+      name: `${leftReport.productName} / ${rightReport.productName}`,
+      leftScanId: leftReport.id,
+      rightScanId: rightReport.id,
+      comparisonData: {
+        leftProductName: leftReport.productName,
+        rightProductName: rightReport.productName,
+        note: "Evidence comparison only; no product winner or safety judgment.",
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const nextComparisons = [
+      nextComparison,
+      ...savedComparisons.filter((item) => item.id !== nextComparison.id),
+    ].slice(0, 20);
+    setSavedComparisons(nextComparisons);
+    if (account.status === "signed-in") {
+      await syncToCloud([], [nextComparison]);
+    }
+  };
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -618,6 +876,15 @@ export default function Home() {
           <button className="method-link" type="button" onClick={() => setLearnOpen(true)} aria-label="How FoodMonocle works">
             <CircleHelp size={18} />
           </button>
+          {account.status === "signed-in" ? (
+            <a className="account-pill" href={account.signOutPath} title={account.email}>
+              <UserRound size={15} /> {account.displayName}
+            </a>
+          ) : (
+            <a className="account-pill" href={account.signInPath}>
+              <UserRound size={15} /> Sign in
+            </a>
+          )}
           <span className="beta-badge">Beta 0.2</span>
         </nav>
         <button className="mobile-menu" type="button" onClick={() => setLearnOpen(true)} aria-label="Open FoodMonocle method">
@@ -785,6 +1052,9 @@ export default function Home() {
               <h2>{report.productName}</h2>
             </div>
             <div className="result-actions">
+              <button type="button" onClick={() => void toggleFavorite(report.id)}>
+                <Heart size={15} fill={favoriteSet.has(report.id) ? "currentColor" : "none"} /> {favoriteSet.has(report.id) ? "Favorited" : "Favorite"}
+              </button>
               <button type="button" onClick={openCompare}><ArrowRightLeft size={15} /> Compare</button>
               <span className="confidence-stamp"><Check size={16} /> {confidenceLabel(report.confidence)}</span>
             </div>
@@ -958,20 +1228,53 @@ export default function Home() {
         <div className="modal-scrim" role="presentation" onMouseDown={() => setHistoryOpen(false)}>
           <aside className="drawer" role="dialog" aria-modal="true" aria-label="Scan history" onMouseDown={(event) => event.stopPropagation()}>
             <div className="drawer-head"><div><small>Your library</small><h2>Scan history</h2></div><button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close history"><X size={21} /></button></div>
+            <div className="sync-panel">
+              <div>
+                <span><Cloud size={15} /> {account.status === "signed-in" ? "Signed-in sync available" : "Local history only"}</span>
+                <p>
+                  Local history stays on this device. With Sign in with ChatGPT, only reports you create while signed in or explicitly choose to synchronize are stored in D1.
+                </p>
+              </div>
+              {account.status === "signed-in" ? (
+                <>
+                  {canOfferSync && <button type="button" onClick={() => void syncLocalHistoryWithConsent()}>Sync local history</button>}
+                  <button type="button" onClick={() => void loadCloudLibrary()} disabled={cloudStatus === "loading"}>Refresh sync</button>
+                </>
+              ) : (
+                <a href={account.signInPath}>Sign in to sync</a>
+              )}
+              {cloudMessage && <small className={cloudStatus === "error" ? "sync-error" : ""}>{cloudMessage}</small>}
+            </div>
             {history.length ? (
+              <>
+              <div className="history-toolbar">
+                <span>{history.length} saved report{history.length === 1 ? "" : "s"}</span>
+                <button type="button" onClick={() => void deleteAllHistory()}><Trash2 size={14} /> Delete all history</button>
+              </div>
               <div className="history-list">
                 {history.map((item) => (
-                  <button type="button" key={item.id} onClick={() => openSavedReport(item)}>
+                  <article key={item.id}>
+                    <button type="button" onClick={() => openSavedReport(item)}>
                     <span className="history-icon">{sourceIcon(item.source)}</span>
                     <span><strong>{item.productName}</strong><small><Clock3 size={13} /> {new Date(item.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</small></span>
                     <span className="history-score">{item.clarityScore}</span>
-                  </button>
+                    </button>
+                    <div className="history-actions">
+                      <button type="button" onClick={() => void toggleFavorite(item.id)} aria-label={favoriteSet.has(item.id) ? `Remove ${item.productName} from favorites` : `Favorite ${item.productName}`}>
+                        <Heart size={14} fill={favoriteSet.has(item.id) ? "currentColor" : "none"} />
+                      </button>
+                      <button type="button" onClick={() => void deleteHistoryItem(item.id)} aria-label={`Delete ${item.productName}`}>
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </article>
                 ))}
               </div>
+              </>
             ) : (
               <div className="empty-state"><History size={32} /><h3>No scans yet</h3><p>Your recent evidence reports will stay on this device.</p></div>
             )}
-            <div className="drawer-privacy"><ShieldCheck size={17} /><p><strong>Local history</strong><br />Scan reports are stored in this browser, not uploaded to an account.</p></div>
+            <div className="drawer-privacy"><ShieldCheck size={17} /><p><strong>Local and synchronized storage</strong><br />Photos stay on this device. Extracted text, product information, evidence, and analysis results synchronize only for signed-in users after consent or while signed in.</p></div>
           </aside>
         </div>
       )}
@@ -1063,6 +1366,25 @@ export default function Home() {
                   <span className="compare-switch"><ArrowRightLeft size={19} /></span>
                   <label><span>Product B</span><select value={compareRightId} onChange={(event) => setCompareRightId(event.target.value)}>{compareReports.map((item) => <option key={item.id} value={item.id}>{item.productName}</option>)}</select></label>
                 </div>
+                {savedComparisons.length > 0 && (
+                  <div className="saved-comparisons">
+                    <span>Saved comparisons</span>
+                    <div>
+                      {savedComparisons.map((item) => (
+                        <button
+                          type="button"
+                          key={item.id}
+                          onClick={() => {
+                            setCompareLeftId(item.leftScanId);
+                            setCompareRightId(item.rightScanId);
+                          }}
+                        >
+                          {item.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {leftReport && rightReport && (
                   <div className="comparison-table">
                     <div className="comparison-head"><span>Evidence</span><strong>{leftReport.productName}</strong><strong>{rightReport.productName}</strong></div>
@@ -1073,6 +1395,11 @@ export default function Home() {
                     <div><span>Major allergens named</span><strong>{leftReport.allergens.join(", ") || "None found"}</strong><strong>{rightReport.allergens.join(", ") || "None found"}</strong></div>
                     <div><span>Evidence confidence</span><strong>{leftReport.confidence}</strong><strong>{rightReport.confidence}</strong></div>
                   </div>
+                )}
+                {leftReport && rightReport && (
+                  <button className="save-comparison-button" type="button" onClick={() => void saveCurrentComparison()}>
+                    <ArrowRightLeft size={16} /> Save comparison
+                  </button>
                 )}
                 <p className="comparison-note"><Info size={15} /> This compares supplied label evidence, not overall nutrition, taste, price, environmental impact, or personal suitability.</p>
               </>

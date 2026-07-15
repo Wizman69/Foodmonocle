@@ -1443,6 +1443,26 @@ a:focus-visible {
   font-size: 9px;
 }
 
+.account-pill {
+  min-height: 31px;
+  max-width: 170px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  color: var(--forest);
+  background: var(--mint);
+  border: 1px solid rgba(33, 78, 67, 0.16);
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.account-pill svg {
+  flex: 0 0 auto;
+}
+
 .mobile-nav {
   display: none;
 }
@@ -1505,7 +1525,90 @@ a:focus-visible {
   overflow-y: auto;
 }
 
-.history-list > button {
+.sync-panel {
+  margin: 14px 0 4px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: #f6faf6;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.sync-panel span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--forest);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.sync-panel p,
+.sync-panel small {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.sync-panel button,
+.sync-panel a,
+.history-toolbar button,
+.save-comparison-button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: var(--surface);
+  background: var(--forest);
+  border: 1px solid var(--forest-deep);
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.sync-panel button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.sync-panel .sync-error {
+  color: #a5414a;
+}
+
+.history-toolbar {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.history-toolbar span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.history-toolbar button {
+  color: var(--forest);
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+.history-list > article {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 7px;
+  align-items: stretch;
+}
+
+.history-list > article > button {
   display: grid;
   grid-template-columns: 38px 1fr auto;
   align-items: center;
@@ -1518,7 +1621,7 @@ a:focus-visible {
   cursor: pointer;
 }
 
-.history-list > button:hover {
+.history-list > article > button:hover {
   border-color: var(--forest);
 }
 
@@ -1532,10 +1635,31 @@ a:focus-visible {
   border-radius: 50%;
 }
 
-.history-list > button > span:nth-child(2) {
+.history-list > article > button > span:nth-child(2) {
   min-width: 0;
   display: grid;
   gap: 5px;
+}
+
+.history-actions {
+  display: grid;
+  gap: 6px;
+}
+
+.history-actions button {
+  width: 34px;
+  min-height: 34px;
+  display: grid;
+  place-items: center;
+  color: var(--forest);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.history-actions button:hover {
+  border-color: var(--forest);
 }
 
 .history-list strong {
@@ -2288,12 +2412,46 @@ a:focus-visible {
   border-radius: 50%;
 }
 
+.saved-comparisons {
+  margin: 0 0 12px;
+  display: grid;
+  gap: 7px;
+}
+
+.saved-comparisons > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.saved-comparisons > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.saved-comparisons button {
+  min-height: 31px;
+  padding: 0 9px;
+  color: var(--forest);
+  background: var(--mint);
+  border: 1px solid rgba(33, 78, 67, 0.16);
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
 .comparison-table {
   min-height: 0;
   display: grid;
   overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 5px;
+}
+
+.save-comparison-button {
+  margin-top: 12px;
 }
 
 .comparison-table > div {

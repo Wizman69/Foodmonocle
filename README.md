@@ -26,7 +26,7 @@ Scripts that need writable project-scoped home, npm, XDG, and temporary paths us
 - `.openai/hosting.json` declares optional Sites D1 and R2 bindings
 - `vite.config.ts` simulates declared bindings for local development
 - `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
-- `db/schema.ts` starts intentionally empty
+- `db/schema.ts` stores signed-in FoodMonocle scan history, favorites, and comparisons
 - `examples/d1/` contains an optional D1 example surface
 - `drizzle.config.ts` supports local migration generation when needed
 
@@ -87,6 +87,22 @@ or enforce explicit server-side membership or allowlist checks.
 
 Use SIWC for account pages, user-specific dashboards, saved records, and write
 actions tied to the current ChatGPT user. Leave public content anonymous.
+
+## FoodMonocle Sync Configuration
+
+Phase 3 uses the Sites-managed D1 binding declared as `"d1": "DB"` in
+`.openai/hosting.json`. Uploaded label photos are not stored by default, so the
+R2 binding is explicitly `null`.
+
+Set `FOODMONOCLE_OWNER_HMAC_SECRET` through Sites environment settings before
+using synchronized records in production. The app derives an opaque per-user
+owner ID from the authenticated SIWC email with this HMAC secret. Do not commit
+the secret, and rotate it carefully because changing it changes derived owner
+IDs for existing synchronized records.
+
+Anonymous users can still scan food and keep local browser history. Old local
+history is not uploaded automatically after sign-in; users must choose
+`Sync local history` before those local records are copied to D1.
 
 ## Diagnostic Commands
 

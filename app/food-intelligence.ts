@@ -43,6 +43,7 @@ export type ScanReport = {
   labelClaims: string[];
   evidence: EvidenceFinding[];
   summary: string;
+  productInfo?: Record<string, unknown>;
 };
 
 export const SAMPLE_LABEL =
@@ -346,6 +347,7 @@ type AnalyzeOptions = {
   qrUrl?: string;
   barcode?: string;
   limitedEvidence?: boolean;
+  productInfo?: Record<string, unknown>;
 };
 
 export function analyzeText(input: string, source: ScanMode, options: AnalyzeOptions = {}): ScanReport {
@@ -491,6 +493,7 @@ export function analyzeText(input: string, source: ScanMode, options: AnalyzeOpt
     labelClaims,
     evidence,
     summary: parts.join(" "),
+    productInfo: options.productInfo,
   };
 }
 
@@ -507,6 +510,7 @@ export function normalizeSavedReport(report: ScanReport): ScanReport {
     barcode: report.barcode,
     qrUrl: report.qrUrl,
     sourceLabel: report.sourceLabel,
+    productInfo: report.productInfo,
   });
   return {
     ...normalized,
