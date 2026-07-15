@@ -76,7 +76,12 @@ export const SOURCE_REFERENCES = {
   recalls: {
     label: "openFDA Food Enforcement Reports",
     url: "https://open.fda.gov/apis/food/enforcement/",
-    lastReviewed: "2026-07-14",
+    lastReviewed: "2026-07-15",
+  },
+  recallsFsis: {
+    label: "USDA-FSIS Recall and Public Health Alert API",
+    url: "https://www.fsis.usda.gov/science-data/developer-resources/recall-api",
+    lastReviewed: "2026-07-15",
   },
 } as const;
 

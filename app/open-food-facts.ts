@@ -12,6 +12,7 @@ export type OpenFoodFactsProduct = {
   name: string;
   brand: string;
   ingredientsText: string;
+  categories: string[];
   labels: string[];
   disclosureText: string;
   nutrition: OpenFoodFactsNutrition;
@@ -54,6 +55,8 @@ type OpenFoodFactsApiProduct = {
   ingredients_text_en?: unknown;
   labels?: unknown;
   labels_tags?: unknown;
+  categories?: unknown;
+  categories_tags?: unknown;
   allergens?: unknown;
   allergens_tags?: unknown;
   traces?: unknown;
@@ -74,6 +77,8 @@ export const OPEN_FOOD_FACTS_FIELDS = [
   "ingredients_text_en",
   "labels",
   "labels_tags",
+  "categories",
+  "categories_tags",
   "allergens",
   "allergens_tags",
   "traces",
@@ -178,6 +183,7 @@ export function mapOpenFoodFactsResponse(data: OpenFoodFactsApiResponse, barcode
 
   const productData = data.product;
   const labels = stringList(productData.labels, productData.labels_tags);
+  const categories = stringList(productData.categories, productData.categories_tags);
   const allergenText = stringList(productData.allergens, productData.allergens_tags);
   const tracesText = stringList(productData.traces, productData.traces_tags);
   const nutrition = nutritionFrom(productData);
@@ -186,6 +192,7 @@ export function mapOpenFoodFactsResponse(data: OpenFoodFactsApiResponse, barcode
     name: asText(productData.product_name) || asText(productData.product_name_en) || "Unnamed Open Food Facts product",
     brand: asText(productData.brands),
     ingredientsText: asText(productData.ingredients_text) || asText(productData.ingredients_text_en),
+    categories,
     labels,
     disclosureText: [...allergenText.map((item) => `Allergen: ${item}`), ...tracesText.map((item) => `Trace: ${item}`)].join("; "),
     nutrition,

@@ -59,17 +59,7 @@ import {
   type CloudLibraryState,
 } from "./cloud-library";
 import type { OpenFoodFactsLookupResult, OpenFoodFactsNutrition } from "./open-food-facts";
-
-type RecallResult = {
-  id: string;
-  product: string;
-  reason: string;
-  company: string;
-  classification: string;
-  status: string;
-  date: string;
-  distribution: string;
-};
+import type { RecallResult, RecallSourceStatus } from "./recall-engine";
 
 type BarcodeProductLookup = Extract<OpenFoodFactsLookupResult, { status: "found" | "incomplete" }>;
 
@@ -138,8 +128,10 @@ function safeHttpUrl(value?: string) {
 }
 
 function formatRecallDate(value: string) {
-  if (!/^\d{8}$/.test(value)) return value || "Date unavailable";
-  const date = new Date(`${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T12:00:00`);
+  if (!value) return "Date unavailable";
+  const normalized = /^\d{8}$/.test(value) ? `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}` : value;
+  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(normalized) ? `${normalized}T12:00:00` : normalized);
+  if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
@@ -233,6 +225,7 @@ function BarcodeLookupCard({
       <div className="barcode-record-grid">
         <span><small>Brand</small>{lookup.product.brand || "Not supplied"}</span>
         <span><small>Barcode</small>{lookup.product.barcode}</span>
+        <span><small>Categories</small>{lookup.product.categories.join(", ") || "Not supplied"}</span>
       </div>
       <div className="barcode-field">
         <small>Ingredients</small>
@@ -289,7 +282,14 @@ export default function Home() {
   const [dictionaryQuery, setDictionaryQuery] = useState("");
   const [recallsOpen, setRecallsOpen] = useState(false);
   const [recallQuery, setRecallQuery] = useState("");
+  const [recallBrand, setRecallBrand] = useState("");
+  const [recallCategory, setRecallCategory] = useState("");
+  const [recallBarcode, setRecallBarcode] = useState("");
+  const [recallLot, setRecallLot] = useState("");
+  const [recallDate, setRecallDate] = useState("");
   const [recallResults, setRecallResults] = useState<RecallResult[]>([]);
+  const [recallSources, setRecallSources] = useState<RecallSourceStatus[]>([]);
+  const [recallWarnings, setRecallWarnings] = useState<string[]>([]);
   const [recallStatus, setRecallStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [recallError, setRecallError] = useState("");
   const [recallCheckedAt, setRecallCheckedAt] = useState("");
@@ -595,6 +595,7 @@ export default function Home() {
         reportProductInfo = {
           name: nextLookup.product.name,
           brand: nextLookup.product.brand,
+          categories: nextLookup.product.categories,
           barcode: nextLookup.product.barcode,
           source: nextLookup.source.name,
           sourceUrl: nextLookup.source.url,
@@ -714,10 +715,20 @@ export default function Home() {
     setDictionaryOpen(true);
   };
 
-  const openRecallWatch = (query = "") => {
+  const openRecallWatch = (query = "", context?: ScanReport) => {
     const usefulName = query && !query.toLowerCase().includes("scanned food label") ? query : "";
+    const info = context?.productInfo;
+    const infoBrand = typeof info?.brand === "string" ? info.brand : "";
+    const infoCategories = Array.isArray(info?.categories) ? info.categories.filter((item): item is string => typeof item === "string").join(", ") : "";
     setRecallQuery(usefulName);
+    setRecallBrand(infoBrand);
+    setRecallCategory(infoCategories);
+    setRecallBarcode(context?.barcode || (typeof info?.barcode === "string" ? info.barcode : ""));
+    setRecallLot("");
+    setRecallDate("");
     setRecallResults([]);
+    setRecallSources([]);
+    setRecallWarnings([]);
     setRecallStatus("idle");
     setRecallError("");
     setRecallsOpen(true);
@@ -725,18 +736,36 @@ export default function Home() {
 
   const searchRecalls = async () => {
     const query = recallQuery.trim();
-    if (query.length < 2) {
+    const hasCriteria = [query, recallBrand, recallCategory, recallLot, recallDate].some((value) => value.trim().length >= 2) || recallBarcode.replace(/\D/g, "").length >= 8;
+    if (!hasCriteria) {
       setRecallStatus("error");
-      setRecallError("Enter a product, brand, or company name.");
+      setRecallError("Enter a product, brand, category, barcode, lot/code, or package date.");
       return;
     }
     setRecallStatus("loading");
     setRecallError("");
+    setRecallWarnings([]);
     try {
-      const response = await fetch(`/api/recalls?q=${encodeURIComponent(query)}`);
-      const data = (await response.json()) as { results?: RecallResult[]; checkedAt?: string; error?: string };
+      const params = new URLSearchParams({
+        product: query,
+        brand: recallBrand.trim(),
+        category: recallCategory.trim(),
+        barcode: recallBarcode.replace(/\D/g, ""),
+        lot: recallLot.trim(),
+        date: recallDate.trim(),
+      });
+      const response = await fetch(`/api/recalls?${params.toString()}`);
+      const data = (await response.json()) as {
+        results?: RecallResult[];
+        sources?: RecallSourceStatus[];
+        warnings?: string[];
+        checkedAt?: string;
+        error?: string;
+      };
       if (!response.ok) throw new Error(data.error || "Recall search is temporarily unavailable.");
       setRecallResults(data.results || []);
+      setRecallSources(data.sources || []);
+      setRecallWarnings(data.warnings || []);
       setRecallCheckedAt(data.checkedAt || new Date().toISOString());
       setRecallStatus("done");
     } catch (caught) {
@@ -864,7 +893,7 @@ export default function Home() {
           <button className="nav-button" type="button" onClick={() => openDictionary()}>
             <BookText size={17} /> Additives
           </button>
-          <button className="nav-button" type="button" onClick={() => openRecallWatch(report?.productName || "")}>
+          <button className="nav-button" type="button" onClick={() => openRecallWatch(report?.productName || "", report || undefined)}>
             <TriangleAlert size={17} /> Recalls
           </button>
           <button className="nav-button" type="button" onClick={openCompare}>
@@ -1073,7 +1102,7 @@ export default function Home() {
                 <span><small>Scan date</small>{new Date(report.createdAt).toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</span>
               </div>
               <div className="verdict-actions">
-                <button type="button" onClick={() => openRecallWatch(report.productName)}><TriangleAlert size={15} /> Check recalls</button>
+                <button type="button" onClick={() => openRecallWatch(report.productName, report)}><TriangleAlert size={15} /> Check recalls</button>
                 <button type="button" onClick={() => openDictionary()}><BookText size={15} /> Additive guide</button>
               </div>
               <div className="score-note"><Info size={16} /> Label clarity measures supplied evidence. It is not a nutrition grade.</div>
@@ -1204,7 +1233,7 @@ export default function Home() {
       ) : (
         <section className="roadmap-strip" aria-label="FoodMonocle tools">
           <div className="roadmap-lead"><PackageSearch size={23} /><div><small>Now built in</small><strong>Deeper evidence at the shelf</strong></div></div>
-          <button className="roadmap-item" type="button" onClick={() => openRecallWatch()}><span>01</span><div><strong>Recall watch</strong><small>Search FDA food enforcement records</small></div></button>
+          <button className="roadmap-item" type="button" onClick={() => openRecallWatch()}><span>01</span><div><strong>Recall watch</strong><small>Search official FDA and USDA-FSIS records</small></div></button>
           <button className="roadmap-item" type="button" onClick={openCompare}><span>02</span><div><strong>Compare products</strong><small>See disclosure and formulation differences</small></div></button>
           <button className="roadmap-item" type="button" onClick={() => openDictionary()}><span>03</span><div><strong>Additive dictionary</strong><small>Search functions and plain-English notes</small></div></button>
         </section>
@@ -1220,7 +1249,7 @@ export default function Home() {
         <button className="active" type="button" onClick={startOver}><ScanLine size={19} /><span>Scan</span></button>
         <button type="button" onClick={openCompare}><ArrowRightLeft size={19} /><span>Compare</span></button>
         <button type="button" onClick={() => openDictionary()}><BookText size={19} /><span>Additives</span></button>
-        <button type="button" onClick={() => openRecallWatch(report?.productName || "")}><TriangleAlert size={19} /><span>Recalls</span></button>
+        <button type="button" onClick={() => openRecallWatch(report?.productName || "", report || undefined)}><TriangleAlert size={19} /><span>Recalls</span></button>
         <button type="button" onClick={() => setHistoryOpen(true)}><History size={19} /><span>History</span></button>
       </nav>
 
@@ -1305,45 +1334,68 @@ export default function Home() {
       {recallsOpen && (
         <div className="modal-scrim centered" role="presentation" onMouseDown={() => setRecallsOpen(false)}>
           <section className="feature-modal recall-modal" role="dialog" aria-modal="true" aria-label="Recall watch" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="drawer-head"><div><small>Official FDA enforcement data</small><h2>Recall watch</h2></div><button type="button" onClick={() => setRecallsOpen(false)} aria-label="Close recall watch"><X size={21} /></button></div>
-            <p className="modal-intro">Search the exact product, brand, or recalling company. A no-match result does not clear a product of recalls or other issues.</p>
+            <div className="drawer-head"><div><small>Official FDA and USDA-FSIS data</small><h2>Recall watch</h2></div><button type="button" onClick={() => setRecallsOpen(false)} aria-label="Close recall watch"><X size={21} /></button></div>
+            <p className="modal-intro">Add every detail visible on the package. A returned record is a lead to verify, and a no-match result does not clear a product of recalls or other issues.</p>
             <div className="recall-search-row">
               <label className="modal-search">
                 <Search size={18} />
-                <input aria-label="Search recall records" value={recallQuery} onChange={(event) => setRecallQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchRecalls(); }} placeholder="Example: frozen blueberries" autoFocus />
+                <input aria-label="Product name" value={recallQuery} onChange={(event) => setRecallQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchRecalls(); }} placeholder="Product name, such as blueberry muffin" autoFocus />
               </label>
               <button type="button" onClick={() => void searchRecalls()} disabled={recallStatus === "loading"}>
                 {recallStatus === "loading" ? <LoaderCircle className="spin" size={18} /> : <Search size={18} />} Search
               </button>
             </div>
+            <div className="recall-filter-grid">
+              <label><span>Brand or company</span><input value={recallBrand} onChange={(event) => setRecallBrand(event.target.value)} placeholder="Brand on package" /></label>
+              <label><span>Category</span><input value={recallCategory} onChange={(event) => setRecallCategory(event.target.value)} placeholder="Example: frozen entree" /></label>
+              <label><span>Barcode / UPC</span><input inputMode="numeric" value={recallBarcode} onChange={(event) => setRecallBarcode(event.target.value.replace(/\D/g, ""))} placeholder="Digits below barcode" /></label>
+              <label><span>Lot or code</span><input value={recallLot} onChange={(event) => setRecallLot(event.target.value)} placeholder="Example: Lot 6082" /></label>
+              <label><span>Package date</span><input value={recallDate} onChange={(event) => setRecallDate(event.target.value)} placeholder="Best by / use by date" /></label>
+            </div>
             {recallStatus === "idle" && (
-              <div className="recall-idle"><TriangleAlert size={29} /><strong>Search FDA food enforcement records</strong><span>Results can include older, completed, or terminated records. Always compare package identifiers and lot codes.</span></div>
+              <div className="recall-idle"><TriangleAlert size={29} /><strong>Search two official recall sources</strong><span>FoodMonocle ranks UPC, lot, and package-date matches above brand, product, and category wording. Always compare the full official notice with the package.</span></div>
             )}
-            {recallStatus === "loading" && <div className="loading-state"><LoaderCircle className="spin" size={25} /> Checking the FDA feed...</div>}
+            {recallStatus === "loading" && <div className="loading-state"><LoaderCircle className="spin" size={25} /> Checking FDA and USDA-FSIS records...</div>}
             {recallStatus === "error" && <div className="form-error recall-error"><AlertCircle size={17} /> {recallError}</div>}
             {recallStatus === "done" && (
               <div className="recall-results">
                 <div className="recall-summary">
-                  <strong>{recallResults.length ? `${recallResults.length} matching record${recallResults.length === 1 ? "" : "s"}` : "No matching records returned"}</strong>
-                  {recallCheckedAt && <span>Checked {new Date(recallCheckedAt).toLocaleString()}</span>}
+                  <strong>{recallResults.length ? `${recallResults.length} possible record${recallResults.length === 1 ? "" : "s"} to verify` : "No matching records returned"}</strong>
+                  {recallCheckedAt && <span>Last checked {new Date(recallCheckedAt).toLocaleString()}</span>}
                 </div>
+                <div className="recall-source-status" aria-label="Recall source status">
+                  {recallSources.map((source) => (
+                    <a className={source.status} href={source.url} target="_blank" rel="noreferrer" key={source.agency}>
+                      <Database size={13} /> <span><strong>{source.agency}</strong>{source.status === "available" ? "Source checked" : "Source unavailable"}</span><ExternalLink size={12} />
+                    </a>
+                  ))}
+                </div>
+                {recallWarnings.map((warning) => <div className="recall-source-warning" key={warning}><AlertCircle size={14} /> {warning} Results below may be incomplete.</div>)}
                 {recallResults.map((item) => (
-                  <article key={item.id}>
-                    <div className="recall-card-head"><span>{item.classification}</span><time>{formatRecallDate(item.date)}</time></div>
+                  <article className={`recall-result-card ${item.matchLevel}`} key={item.id}>
+                    <div className="recall-card-head"><span>{item.agency} · {item.matchLabel}</span><time>{formatRecallDate(item.date)}</time></div>
                     <h3>{item.company}</h3>
                     <p className="recall-product">{item.product}</p>
                     <p><strong>Reason:</strong> {item.reason}</p>
-                    <div><span>Status: {item.status}</span><span>{item.distribution}</span></div>
+                    <p><strong>Affected products:</strong> {item.affectedProducts}</p>
+                    <p><strong>Codes, lots, and dates:</strong> {item.codes}</p>
+                    <div className="recall-match-details">
+                      {item.matchDetails.map((detail) => <span key={`${detail.criterion}-${detail.label}`}><CheckCircle2 size={12} /><strong>{detail.label}</strong>{detail.evidence}</span>)}
+                    </div>
+                    {item.verificationGaps.map((gap) => <p className="recall-gap" key={gap}><CircleHelp size={13} /> {gap}</p>)}
+                    <p className="recall-applicability"><Info size={14} /> {item.applicability}</p>
+                    <div className="recall-record-meta"><span>{item.classification}</span><span>Status: {item.status}</span><span>{item.distribution}</span></div>
+                    <a className="recall-record-link" href={safeHttpUrl(item.sourceUrl)} target="_blank" rel="noreferrer">Official {item.agency} source record <ExternalLink size={13} /></a>
                   </article>
                 ))}
-                {!recallResults.length && <div className="no-recall-match"><Search size={27} /><p>No FDA enforcement record matched that exact phrase. Try the brand or company name, then verify with the official recall pages below.</p></div>}
+                {!recallResults.length && <div className="no-recall-match"><Search size={27} /><p>No available FDA or USDA-FSIS record matched the supplied details. This is not evidence that the product has no recall; check spelling, add package identifiers, and review the official pages below.</p></div>}
               </div>
             )}
             <div className="official-link-row">
               <a href="https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts" target="_blank" rel="noreferrer">FDA recalls <ExternalLink size={14} /></a>
               <a href="https://www.fsis.usda.gov/recalls-alerts" target="_blank" rel="noreferrer">USDA meat and poultry recalls <ExternalLink size={14} /></a>
             </div>
-            <p className="legal-note"><Database size={16} /> The openFDA food enforcement dataset is updated weekly and is not a real-time recall alert service. Verify any match with the official notice and the package in hand.</p>
+            <p className="legal-note"><Database size={16} /> openFDA enforcement data is updated weekly; USDA-FSIS maintains a separate official recall feed. Search coverage and record fields can vary. Verify every possible match against the complete official notice and the physical package.</p>
           </section>
         </div>
       )}
@@ -1425,6 +1477,7 @@ export default function Home() {
               <a href={SOURCE_REFERENCES.cultivated.url} target="_blank" rel="noreferrer">{SOURCE_REFERENCES.cultivated.label} <span>Last reviewed {SOURCE_REFERENCES.cultivated.lastReviewed}</span> <ChevronRight size={15} /></a>
               <a href="https://world.openfoodfacts.org/" target="_blank" rel="noreferrer">Open Food Facts product database <span>Third-party, community-maintained</span> <ChevronRight size={15} /></a>
               <a href={SOURCE_REFERENCES.recalls.url} target="_blank" rel="noreferrer">{SOURCE_REFERENCES.recalls.label} <span>Last reviewed {SOURCE_REFERENCES.recalls.lastReviewed}</span> <ChevronRight size={15} /></a>
+              <a href={SOURCE_REFERENCES.recallsFsis.url} target="_blank" rel="noreferrer">{SOURCE_REFERENCES.recallsFsis.label} <span>Last reviewed {SOURCE_REFERENCES.recallsFsis.lastReviewed}</span> <ChevronRight size={15} /></a>
             </div>
             <p className="legal-note"><AlertCircle size={16} /> Ingredient, allergen, and recall results must be checked against the physical package and official notices. FoodMonocle is educational; it is not medical, dietary, legal, or risk advice.</p>
           </section>

@@ -27,6 +27,7 @@ test("successful barcode lookup maps Open Food Facts product data for evidence a
           product_name: "Colorful corn snack",
           brands: "Acme Foods",
           ingredients_text: "Corn meal, canola oil, yellow 5. Contains bioengineered food ingredients.",
+          categories: "Snacks, Corn snacks",
           labels: "Gluten-free, Bioengineered food ingredients",
           labels_tags: ["en:gluten-free", "en:bioengineered-food-ingredients"],
           nutriments: {
@@ -48,6 +49,7 @@ test("successful barcode lookup maps Open Food Facts product data for evidence a
   assert.equal(result.product.brand, "Acme Foods");
   assert.match(result.analysisText, /Contains bioengineered food ingredients/);
   assert.deepEqual(result.product.labels, ["Gluten-free", "Bioengineered food ingredients"]);
+  assert.deepEqual(result.product.categories, ["Snacks", "Corn snacks"]);
   assert.equal(result.product.nutrition.energyKcal100g, 510);
   assert.equal(result.source.name, "Open Food Facts");
   assert.equal(result.source.retrievedAt, "2026-07-14T21:30:00.000Z");
