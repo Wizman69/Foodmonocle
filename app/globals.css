@@ -633,6 +633,139 @@ a:focus-visible {
   flex: 0 0 auto;
 }
 
+.barcode-record {
+  display: grid;
+  gap: 11px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--forest);
+  border-radius: 6px;
+}
+
+.barcode-record.incomplete {
+  border-left-color: var(--yellow);
+}
+
+.barcode-record.not-found,
+.barcode-record.error {
+  border-left-color: var(--coral);
+}
+
+.barcode-record-head {
+  display: grid;
+  gap: 5px;
+}
+
+.barcode-record-head > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.barcode-record-head strong {
+  font-size: 14px;
+}
+
+.barcode-record > p,
+.barcode-field p {
+  margin: 0;
+  color: #52645e;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.barcode-record-grid,
+.nutrition-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.barcode-record-grid span,
+.nutrition-grid span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  background: #f7faf7;
+  border: 1px solid #e1e8e3;
+  border-radius: 4px;
+  color: var(--ink);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.barcode-field {
+  display: grid;
+  gap: 4px;
+}
+
+.barcode-field small,
+.barcode-record-grid small,
+.nutrition-grid small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.barcode-warnings {
+  display: grid;
+  gap: 5px;
+}
+
+.barcode-warnings span {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: #7d5a11;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.barcode-warnings svg {
+  flex: 0 0 auto;
+}
+
+.barcode-source-row,
+.fallback-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.barcode-source-row {
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.barcode-source-row a,
+.fallback-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--forest);
+  font-size: 9px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.fallback-actions button {
+  min-height: 34px;
+  padding: 0 9px;
+  background: var(--mint);
+  border: 1px solid var(--mint-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
 .form-error {
   margin-top: 14px;
   display: flex;
@@ -2364,6 +2497,11 @@ a:focus-visible {
 
   .upload-zone {
     min-height: 180px;
+  }
+
+  .barcode-record-grid,
+  .nutrition-grid {
+    grid-template-columns: 1fr;
   }
 
   .large-text-field textarea {

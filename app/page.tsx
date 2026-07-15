@@ -48,6 +48,7 @@ import {
   type ScanMode,
   type ScanReport,
 } from "./food-intelligence";
+import type { OpenFoodFactsLookupResult, OpenFoodFactsNutrition } from "./open-food-facts";
 
 type RecallResult = {
   id: string;
@@ -59,6 +60,8 @@ type RecallResult = {
   date: string;
   distribution: string;
 };
+
+type BarcodeProductLookup = Extract<OpenFoodFactsLookupResult, { status: "found" | "incomplete" }>;
 
 function Logo() {
   return (
@@ -125,6 +128,25 @@ function formatRecallDate(value: string) {
   return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function hasBarcodeProduct(result: OpenFoodFactsLookupResult | null): result is BarcodeProductLookup {
+  return Boolean(result && "product" in result);
+}
+
+function nutritionRows(nutrition: OpenFoodFactsNutrition) {
+  return [
+    ["Energy", nutrition.energyKcal100g, "kcal/100g"],
+    ["Fat", nutrition.fat100g, "g/100g"],
+    ["Carbs", nutrition.carbohydrates100g, "g/100g"],
+    ["Sugars", nutrition.sugars100g, "g/100g"],
+    ["Protein", nutrition.proteins100g, "g/100g"],
+    ["Salt", nutrition.salt100g, "g/100g"],
+  ].filter((row): row is [string, number, string] => typeof row[1] === "number");
+}
+
 function ProcessingMeter({ report, compact = false }: { report: ScanReport; compact?: boolean }) {
   return (
     <div className={`processing-meter ${compact ? "compact" : ""}`}>
@@ -149,11 +171,89 @@ function ProcessingMeter({ report, compact = false }: { report: ScanReport; comp
   );
 }
 
+function BarcodeLookupCard({
+  lookup,
+  onPhotoFallback,
+  onTextFallback,
+}: {
+  lookup: OpenFoodFactsLookupResult;
+  onPhotoFallback: () => void;
+  onTextFallback: () => void;
+}) {
+  const retrieved = formatDateTime(lookup.source.retrievedAt);
+
+  if (!hasBarcodeProduct(lookup)) {
+    return (
+      <div className={`barcode-record ${lookup.status}`}>
+        <div className="barcode-record-head">
+          <span><Database size={15} /> {lookup.source.name}</span>
+          <strong>{lookup.status === "not-found" ? "No product record found" : "Barcode source unavailable"}</strong>
+        </div>
+        <p>{lookup.message}</p>
+        <p>{lookup.fallbackPrompt}</p>
+        <div className="barcode-source-row">
+          <a href={lookup.source.url} target="_blank" rel="noreferrer">Source URL <ExternalLink size={13} /></a>
+          <span>Retrieved {retrieved}</span>
+        </div>
+        <div className="fallback-actions">
+          <button type="button" onClick={onPhotoFallback}><Camera size={15} /> Use photo OCR</button>
+          <button type="button" onClick={onTextFallback}><FileText size={15} /> Enter label text</button>
+        </div>
+      </div>
+    );
+  }
+
+  const rows = nutritionRows(lookup.product.nutrition);
+
+  return (
+    <div className={`barcode-record ${lookup.status}`}>
+      <div className="barcode-record-head">
+        <span><Database size={15} /> {lookup.source.name}</span>
+        <strong>{lookup.product.name}</strong>
+      </div>
+      <div className="barcode-record-grid">
+        <span><small>Brand</small>{lookup.product.brand || "Not supplied"}</span>
+        <span><small>Barcode</small>{lookup.product.barcode}</span>
+      </div>
+      <div className="barcode-field">
+        <small>Ingredients</small>
+        <p>{lookup.product.ingredientsText || "Ingredients were not supplied in this Open Food Facts record."}</p>
+      </div>
+      <div className="barcode-field">
+        <small>Labels and available disclosure information</small>
+        <p>{[...lookup.product.labels, lookup.product.disclosureText].filter(Boolean).join("; ") || "No label or disclosure fields were supplied in this record."}</p>
+      </div>
+      <div className="nutrition-grid">
+        {rows.length ? rows.map(([label, value, unit]) => (
+          <span key={label}><small>{label}</small>{value} {unit}</span>
+        )) : <span><small>Nutrition</small>Not supplied</span>}
+      </div>
+      {lookup.warnings.length > 0 && (
+        <div className="barcode-warnings">
+          {lookup.warnings.map((warning) => <span key={warning}><Info size={13} /> {warning}</span>)}
+        </div>
+      )}
+      <p className="source-caveat"><Database size={14} /> {lookup.source.description}</p>
+      <div className="barcode-source-row">
+        <a href={lookup.source.url} target="_blank" rel="noreferrer">Source URL <ExternalLink size={13} /></a>
+        <span>Retrieved {retrieved}</span>
+      </div>
+      {lookup.status === "incomplete" && (
+        <div className="fallback-actions">
+          <button type="button" onClick={onPhotoFallback}><Camera size={15} /> Use photo OCR</button>
+          <button type="button" onClick={onTextFallback}><FileText size={15} /> Enter label text</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [mode, setMode] = useState<ScanMode>("photo");
   const [ingredients, setIngredients] = useState("");
   const [productName, setProductName] = useState("");
   const [barcode, setBarcode] = useState("");
+  const [barcodeLookup, setBarcodeLookup] = useState<OpenFoodFactsLookupResult | null>(null);
   const [qrValue, setQrValue] = useState("");
   const [imageName, setImageName] = useState("");
   const [imageUrl, setImageUrl] = useState("");
@@ -323,16 +423,29 @@ export default function Home() {
       let sourceLabel = "Supplied package text";
       let decodedQr = "";
       let qrUrl = "";
+      let reportProductName = productName.trim() || undefined;
 
       if (mode === "barcode") {
-        if (barcode.trim().length < 8) throw new Error("Enter a valid barcode, or use the demo barcode.");
-        if (barcode.replace(/\D/g, "") !== DEMO_BARCODE) {
-          throw new Error("This beta recognizes the demo barcode. Photograph the label for any other product.");
+        const cleanBarcode = barcode.replace(/\D/g, "");
+        if (cleanBarcode.length < 8) throw new Error("Enter a valid UPC or EAN barcode.");
+        setScanStage("Checking Open Food Facts");
+        setScanProgress(45);
+        const response = await fetch(`/api/barcode?barcode=${encodeURIComponent(cleanBarcode)}`);
+        const lookup = (await response.json()) as OpenFoodFactsLookupResult | { error?: string };
+        if ("error" in lookup && lookup.error) throw new Error(lookup.error);
+        const nextLookup = lookup as OpenFoodFactsLookupResult;
+        setBarcodeLookup(nextLookup);
+        if (!hasBarcodeProduct(nextLookup)) {
+          setError(`${nextLookup.message} ${nextLookup.fallbackPrompt}`);
+          return;
         }
-        setScanStage("Opening product record");
-        setScanProgress(65);
-        scanText = SAMPLE_LABEL;
-        sourceLabel = `Demo barcode record ${DEMO_BARCODE}`;
+        setScanStage("Reviewing Open Food Facts record");
+        setScanProgress(72);
+        scanText = nextLookup.analysisText;
+        setIngredients(scanText);
+        setProductName(nextLookup.product.name);
+        reportProductName = nextLookup.product.name;
+        sourceLabel = `${nextLookup.source.name} community record retrieved ${formatDateTime(nextLookup.source.retrievedAt)}`;
       }
 
       if (mode === "photo" && scanText.length < 20) {
@@ -372,10 +485,11 @@ export default function Home() {
       setScanStage("Building evidence report");
       setScanProgress(94);
       const nextReport = analyzeText(scanText, mode, {
-        productName: productName.trim() || (mode === "barcode" ? "Demo corn snack" : undefined),
+        productName: reportProductName,
         barcode: mode === "barcode" ? barcode : undefined,
         qrUrl: qrUrl || undefined,
         sourceLabel,
+        limitedEvidence: mode === "barcode",
       });
       finishReport(nextReport);
     } catch (caught) {
@@ -400,10 +514,23 @@ export default function Home() {
   const loadDemoBarcode = () => {
     setMode("barcode");
     setBarcode(DEMO_BARCODE);
-    setProductName("Demo corn snack");
+    setProductName("");
     setIngredients("");
+    setBarcodeLookup(null);
     setError("");
     setReport(null);
+  };
+
+  const usePhotoFallback = () => {
+    setMode("photo");
+    setError("");
+    setScanStage("");
+  };
+
+  const useTextFallback = () => {
+    setMode("ingredients");
+    setError("");
+    setScanStage("");
   };
 
   const startOver = () => {
@@ -599,11 +726,14 @@ export default function Home() {
                 <span>UPC or EAN barcode</span>
                 <div className="barcode-input-wrap">
                   <Barcode size={20} />
-                  <input inputMode="numeric" value={barcode} onChange={(event) => setBarcode(event.target.value.replace(/\D/g, ""))} placeholder="Enter the number below the bars" />
+                  <input inputMode="numeric" value={barcode} onChange={(event) => { setBarcode(event.target.value.replace(/\D/g, "")); setBarcodeLookup(null); }} placeholder="Enter the number below the bars" />
                 </div>
               </label>
               <button className="text-action" type="button" onClick={loadDemoBarcode}>Use demo barcode <span>{DEMO_BARCODE}</span></button>
-              <p className="source-caveat"><Database size={14} /> Live community barcode records are not connected in this beta. Any package can be read with Photo.</p>
+              <p className="source-caveat"><Database size={14} /> Barcode lookup uses Open Food Facts, a third-party, community-maintained source. Missing fields are not absence evidence.</p>
+              {barcodeLookup && (
+                <BarcodeLookupCard lookup={barcodeLookup} onPhotoFallback={usePhotoFallback} onTextFallback={useTextFallback} />
+              )}
             </div>
           )}
 
@@ -713,6 +843,16 @@ export default function Home() {
                   <span className="finding-count">{report.allergens.length}</span>
                 </article>
               </div>
+
+              {report.source === "barcode" && barcodeLookup && (
+                <article className="detail-card barcode-source-card">
+                  <div className="detail-heading">
+                    <div><span className="section-number">OFF</span><h3>Open Food Facts record</h3></div>
+                    <span>Third-party source</span>
+                  </div>
+                  <BarcodeLookupCard lookup={barcodeLookup} onPhotoFallback={usePhotoFallback} onTextFallback={useTextFallback} />
+                </article>
+              )}
 
               <article className="detail-card evidence-section">
                 <div className="detail-heading">
@@ -956,6 +1096,7 @@ export default function Home() {
               <strong>Regulatory and data starting points</strong>
               <a href={SOURCE_REFERENCES.bioengineered.url} target="_blank" rel="noreferrer">{SOURCE_REFERENCES.bioengineered.label} <span>Last reviewed {SOURCE_REFERENCES.bioengineered.lastReviewed}</span> <ChevronRight size={15} /></a>
               <a href={SOURCE_REFERENCES.cultivated.url} target="_blank" rel="noreferrer">{SOURCE_REFERENCES.cultivated.label} <span>Last reviewed {SOURCE_REFERENCES.cultivated.lastReviewed}</span> <ChevronRight size={15} /></a>
+              <a href="https://world.openfoodfacts.org/" target="_blank" rel="noreferrer">Open Food Facts product database <span>Third-party, community-maintained</span> <ChevronRight size={15} /></a>
               <a href={SOURCE_REFERENCES.recalls.url} target="_blank" rel="noreferrer">{SOURCE_REFERENCES.recalls.label} <span>Last reviewed {SOURCE_REFERENCES.recalls.lastReviewed}</span> <ChevronRight size={15} /></a>
             </div>
             <p className="legal-note"><AlertCircle size={16} /> Ingredient, allergen, and recall results must be checked against the physical package and official notices. FoodMonocle is educational; it is not medical, dietary, legal, or risk advice.</p>

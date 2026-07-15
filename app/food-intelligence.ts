@@ -345,30 +345,32 @@ type AnalyzeOptions = {
   sourceLabel?: string;
   qrUrl?: string;
   barcode?: string;
+  limitedEvidence?: boolean;
 };
 
 export function analyzeText(input: string, source: ScanMode, options: AnalyzeOptions = {}): ScanReport {
   const text = input.toLowerCase().replace(/\s+/g, " ").trim();
   const qrDestinationOnly = source === "qr" && /^https?:\/\/\S+$/.test(text);
+  const canCallNoMatch = text.length > 30 && !options.limitedEvidence;
   const bioengineered: FindingState = includesAny(text, bioTerms)
     ? "found"
     : qrDestinationOnly
       ? "unclear"
-    : text.length > 30
+    : canCallNoMatch
       ? "not-found"
       : "unclear";
   const cultivated: FindingState = includesAny(text, cultivatedTerms)
     ? "found"
     : qrDestinationOnly
       ? "unclear"
-    : text.length > 30
+    : canCallNoMatch
       ? "not-found"
       : "unclear";
   const digitalDisclosure: FindingState = options.qrUrl || includesAny(text, digitalTerms)
     ? "found"
     : source === "qr"
       ? "unclear"
-      : text.length > 30
+      : canCallNoMatch
         ? "not-found"
         : "unclear";
 
@@ -450,11 +452,15 @@ export function analyzeText(input: string, source: ScanMode, options: AnalyzeOpt
   const parts = [
     bioengineered === "found"
       ? "Bioengineered-food disclosure wording was found in the supplied evidence."
+      : bioengineered === "unclear"
+        ? "Not enough supplied evidence was available to evaluate bioengineered-food disclosure wording."
       : qrDestinationOnly
         ? "The QR destination was captured, but its linked disclosure text was not read."
       : "No bioengineered-food disclosure was found in the supplied text; that is not proof of absence.",
     cultivated === "found"
       ? "Cultivated or cell-cultured animal wording was found in the supplied evidence."
+      : cultivated === "unclear"
+        ? "Not enough supplied evidence was available to evaluate cultivated or cell-cultured animal wording."
       : qrDestinationOnly
         ? "Cultivated-meat wording cannot be evaluated from the URL alone."
       : "No cultivated-meat wording was found in the supplied text; that is not proof of absence.",
